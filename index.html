@@ -35383,14 +35383,17 @@ if (!window.__printListenersRegistered) {
   }
 
   function Field(props) {
+    const locked = !!props.disabled;
     return React.createElement("div", null,
       React.createElement("label", { style: styles.label }, props.label),
       React.createElement("input", {
-        style: styles.input, type: props.type || "text", value: props.value,
+        style: locked ? { ...styles.input, background: "#F1F5F9", color: "#64748B", cursor: "not-allowed" } : styles.input,
+        type: props.type || "text", value: props.value,
         placeholder: props.placeholder || "", autoComplete: props.autoComplete || "off",
+        disabled: locked, readOnly: locked,
         onChange: e => props.onChange(e.target.value),
-        onFocus: e => e.target.style.borderColor = "#00A8E0",
-        onBlur: e => e.target.style.borderColor = "#E2E8F0",
+        onFocus: e => { if (!locked) e.target.style.borderColor = "#00A8E0"; },
+        onBlur: e => { if (!locked) e.target.style.borderColor = "#E2E8F0"; },
         onKeyDown: e => { if (e.key === "Enter" && props.onEnter) props.onEnter(); }
       })
     );
@@ -35399,7 +35402,7 @@ if (!window.__printListenersRegistered) {
   // ═══════════════ LOGIN GATE ═══════════════
   function LoginGate() {
     const { useState, useEffect, useRef } = React;
-    const [phase, setPhase] = useState("loading"); // loading | login | register | verify | pending | blocked | denied | ready
+    const [phase, setPhase] = useState("loading"); // loading | login | register | verify | pending | blocked | denied | ready | invite_used | invite_bad
     const [email, setEmail] = useState("");
     const [pw, setPw] = useState("");
     const [pw2, setPw2] = useState("");
@@ -35408,17 +35411,71 @@ if (!window.__printListenersRegistered) {
     const [msg, setMsg] = useState("");
     const [busy, setBusy] = useState(false);
     const [user, setUser] = useState(null);
+    // ── Einladung (Einmal-Link) ──
+    const [inviteCode, setInviteCode] = useState("");   // Code aus ?einladung=
+    const [invite, setInvite] = useState(null);          // {vorname,nachname,email,shop,status,...}
+    const [inviteReady, setInviteReady] = useState(false); // Einladung wurde geprüft
     const fb = useRef(null);
 
     useEffect(() => {
       try { fb.current = window.__psAuth(); } catch (e) { setErr("Firebase Auth konnte nicht geladen werden."); setPhase("login"); return; }
-      const { auth } = fb.current;
+      const { auth, db } = fb.current;
+
+      // 1) Einladungs-Code aus der URL lesen und in Firebase nachschlagen
+      let cancelled = false;
+      (async () => {
+        let code = "";
+        try { code = (new URLSearchParams(window.location.search || "").get("einladung") || "").trim(); } catch (e) {}
+        if (code) {
+          setInviteCode(code);
+          try {
+            const invSnap = await db.collection("invites").doc(code).get();
+            if (!cancelled) {
+              if (invSnap.exists) {
+                const d = invSnap.data() || {};
+                setInvite(Object.assign({ __id: code }, d));
+                // E-Mail aus der Einladung fest übernehmen (nicht änderbar)
+                if (d.email) setEmail(String(d.email).toLowerCase());
+              } else {
+                setInvite(null); // Code existiert nicht
+              }
+            }
+          } catch (e) { if (!cancelled) setInvite(null); }
+        }
+        if (!cancelled) setInviteReady(true);
+      })();
+
+      // 2) Anmeldestatus beobachten
       const unsub = auth.onAuthStateChanged(async (u) => {
-        if (!u) { setPhase("login"); return; }
+        if (!u) { /* Startbildschirm entscheidet sich weiter unten via inviteReady */ if (!cancelled) evaluateStart(); return; }
         await evaluateUser(u);
       });
-      return () => unsub && unsub();
+      return () => { cancelled = true; unsub && unsub(); };
     }, []);
+
+    // Startbildschirm bestimmen, sobald Einladung geprüft ist und niemand angemeldet ist
+    function evaluateStart() {
+      // Wird über einen Effekt getriggert, sobald inviteReady true wird
+      setPhase("login");
+    }
+
+    // Sobald die Einladung geprüft ist und niemand angemeldet ist:
+    // Bei gültiger, unverbrauchter Einladung direkt zur Registrierung mit vorausgefüllten Daten.
+    useEffect(() => {
+      if (!inviteReady) return;
+      // Nur eingreifen, wenn wir noch auf dem Start-/Login-Screen sind (nicht wenn schon angemeldet)
+      setPhase(prev => {
+        if (prev === "loading" || prev === "login") {
+          if (inviteCode) {
+            if (!invite) return "invite_bad";       // Code unbekannt/gelöscht
+            if (invite.status === "used") return "invite_used"; // schon verbraucht
+            return "register";                        // gültige, offene Einladung -> Registrierung
+          }
+          return "login"; // kein Code -> nur Anmeldung (kein Registrieren)
+        }
+        return prev;
+      });
+    }, [inviteReady, invite, inviteCode]);
 
     async function evaluateUser(u) {
       setUser(u);
@@ -35431,15 +35488,34 @@ if (!window.__printListenersRegistered) {
       const devId = getDeviceId();
       if (!snap.exists) {
         // Erstes verifiziertes Login -> Datensatz anlegen, Gerät binden, auf Freigabe warten
+        // Einladungsdaten (Name/Shop) mit übernehmen, falls vorhanden
+        const inv = invite || {};
+        const newDoc = {
+          email: (u.email || "").toLowerCase(),
+          status: isAdmin(u.email) ? "approved" : "pending",
+          deviceId: devId,
+          createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
+          lastLogin: window.firebase.firestore.FieldValue.serverTimestamp()
+        };
+        if (inv.vorname) newDoc.vorname = inv.vorname;
+        if (inv.nachname) newDoc.nachname = inv.nachname;
+        if (inv.shop) newDoc.shop = inv.shop;
+        if (inv.shopwechsel != null) newDoc.shopwechsel = !!inv.shopwechsel;
+        if (inviteCode) newDoc.inviteCode = inviteCode;
         try {
-          await ref.set({
-            email: (u.email || "").toLowerCase(),
-            status: isAdmin(u.email) ? "approved" : "pending",
-            deviceId: devId,
-            createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-            lastLogin: window.firebase.firestore.FieldValue.serverTimestamp()
-          });
+          await ref.set(newDoc);
         } catch (e) { setErr(friendly(e)); setPhase("login"); return; }
+        // Einladung als VERBRAUCHT markieren und fest mit dem Konto verknüpfen (Einmal-Link)
+        if (inviteCode) {
+          try {
+            await db.collection("invites").doc(inviteCode).update({
+              status: "used",
+              usedByUid: u.uid,
+              usedByEmail: (u.email || "").toLowerCase(),
+              usedAt: window.firebase.firestore.FieldValue.serverTimestamp()
+            });
+          } catch (e) { /* nicht kritisch für den Login des Mitarbeiters */ }
+        }
         setPhase(isAdmin(u.email) ? "ready" : "pending");
         return;
       }
@@ -35455,16 +35531,24 @@ if (!window.__printListenersRegistered) {
 
     async function doRegister() {
       setErr(""); setMsg("");
-      if (!emailOk(email)) { setErr("Bitte deine geschäftliche @" + ALLOWED_DOMAIN + " Adresse verwenden."); return; }
+      // Registrierung nur mit gültiger, unverbrauchter Einladung
+      if (!inviteCode) { setErr("Zum Registrieren brauchst du einen Einladungs-Link. Bitte wende dich an deinen Administrator."); return; }
+      if (!invite) { setErr("Diese Einladung ist ungültig oder wurde gelöscht. Bitte wende dich an deinen Administrator."); return; }
+      if (invite.status === "used") { setPhase("invite_used"); return; }
+      // E-Mail muss zur Einladung passen (sie ist fest vorgegeben)
+      const invMail = String(invite.email || "").toLowerCase().trim();
+      const useMail = invMail || email.toLowerCase().trim();
+      if (invMail && email.toLowerCase().trim() !== invMail) { setErr("Bitte die eingeladene E-Mail-Adresse verwenden: " + invMail); return; }
+      if (!emailOk(useMail)) { setErr("Bitte deine geschäftliche @" + ALLOWED_DOMAIN + " Adresse verwenden."); return; }
       if (pw.length < 6) { setErr("Passwort muss mindestens 6 Zeichen haben."); return; }
       if (pw !== pw2) { setErr("Die Passwörter stimmen nicht überein."); return; }
       setBusy(true);
       const { auth } = fb.current;
       try {
         await auth.setPersistence(stay ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION);
-        const cred = await auth.createUserWithEmailAndPassword(email.toLowerCase().trim(), pw);
+        const cred = await auth.createUserWithEmailAndPassword(useMail, pw);
         await cred.user.sendEmailVerification();
-        setMsg("Bestätigungs-E-Mail gesendet. Bitte Postfach prüfen und auf den Link klicken.");
+        setMsg("Bestätigungs-E-Mail gesendet. Bitte Postfach (auch Junk/Spam) prüfen und auf den Link klicken.");
         setPhase("verify");
       } catch (e) { setErr(friendly(e)); }
       setBusy(false);
@@ -35557,10 +35641,41 @@ if (!window.__printListenersRegistered) {
       ));
     }
 
+    if (phase === "invite_used") {
+      return box(React.createElement("div", null,
+        React.createElement("div", { style: styles.err }, "Diese Einladung wurde bereits verwendet."),
+        React.createElement("p", { style: { fontSize: "14px", color: "#334155", lineHeight: 1.6, textAlign: "center" } },
+          "Wenn du dich bereits registriert hast, melde dich einfach mit ", React.createElement("b", null, "E-Mail und Passwort"), " an."),
+        React.createElement("button", { style: styles.btn, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Zur Anmeldung"),
+        React.createElement("p", { style: styles.muted }, "Brauchst du eine neue Einladung? Bitte an den Administrator wenden.")
+      ));
+    }
+
+    if (phase === "invite_bad") {
+      return box(React.createElement("div", null,
+        React.createElement("div", { style: styles.err }, "Dieser Einladungs-Link ist ungültig oder wurde gelöscht."),
+        React.createElement("p", { style: { fontSize: "14px", color: "#334155", lineHeight: 1.6, textAlign: "center" } },
+          "Bitte prüfe, ob du den vollständigen Link geöffnet hast, oder fordere eine neue Einladung an."),
+        React.createElement("button", { style: styles.btnGhost, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Zur Anmeldung")
+      ));
+    }
+
     // login | register
     const isReg = phase === "register";
+    const inviteName = invite ? [invite.vorname, invite.nachname].filter(Boolean).join(" ") : "";
+    const emailLocked = isReg && !!(invite && invite.email); // E-Mail bei Einladung fest
     return box(React.createElement("div", null,
-      React.createElement(Field, { label: "Geschäftliche E-Mail", type: "email", value: email, placeholder: "vorname@" + ALLOWED_DOMAIN, autoComplete: "username", onChange: setEmail, onEnter: isReg ? doRegister : doLogin }),
+      // Einladungs-Banner (nur bei Registrierung mit gültiger Einladung)
+      isReg && invite && React.createElement("div", {
+        style: { background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: "12px", padding: "12px 14px", marginBottom: "14px" }
+      },
+        React.createElement("div", { style: { fontSize: "13px", fontWeight: 800, color: "#1E3A8A", marginBottom: "4px" } }, "Willkommen" + (inviteName ? ", " + inviteName : "") + "!"),
+        React.createElement("div", { style: { fontSize: "12.5px", color: "#334155", lineHeight: 1.5 } },
+          "Lege jetzt dein Passwort fest, um deinen Zugang zu aktivieren.",
+          invite.shop ? React.createElement("span", null, " Shop: ", React.createElement("b", null, invite.shop)) : null
+        )
+      ),
+      React.createElement(Field, { label: "Geschäftliche E-Mail", type: "email", value: email, placeholder: "vorname@" + ALLOWED_DOMAIN, autoComplete: "username", onChange: emailLocked ? (() => {}) : setEmail, onEnter: isReg ? doRegister : doLogin, disabled: emailLocked }),
       React.createElement(Field, { label: "Passwort", type: "password", value: pw, autoComplete: isReg ? "new-password" : "current-password", onChange: setPw, onEnter: isReg ? doRegister : doLogin }),
       isReg && React.createElement(Field, { label: "Passwort bestätigen", type: "password", value: pw2, autoComplete: "new-password", onChange: setPw2, onEnter: doRegister }),
       React.createElement("label", { style: styles.checkRow },
@@ -35569,14 +35684,13 @@ if (!window.__printListenersRegistered) {
       err && React.createElement("div", { style: styles.err }, err),
       msg && React.createElement("div", { style: styles.ok }, msg),
       React.createElement("button", { style: { ...styles.btn, opacity: busy ? 0.6 : 1 }, disabled: busy, onClick: isReg ? doRegister : doLogin },
-        busy ? "Bitte warten…" : (isReg ? "Registrieren" : "Anmelden")),
+        busy ? "Bitte warten…" : (isReg ? "Zugang aktivieren" : "Anmelden")),
       isReg
-        ? React.createElement("button", { style: styles.btnGhost, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Zurück zur Anmeldung")
+        ? React.createElement("button", { style: styles.btnGhost, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Ich habe schon ein Konto – anmelden")
         : React.createElement("div", null,
-            React.createElement("button", { style: styles.btnGhost, onClick: () => { setPhase("register"); setErr(""); setMsg(""); } }, "Neues Konto registrieren"),
             React.createElement("button", { style: { ...styles.btnGhost, color: "#94A3B8" }, onClick: doReset }, "Passwort vergessen?")
           ),
-      React.createElement("p", { style: styles.muted }, "Nur für Mitarbeiter mit @" + ALLOWED_DOMAIN + " Adresse.")
+      React.createElement("p", { style: styles.muted }, isReg ? ("Zugang nur mit Einladung. Nur für @" + ALLOWED_DOMAIN + " Adressen.") : ("Anmeldung für bereits registrierte Mitarbeiter. Neue Zugänge nur per Einladungs-Link."))
     ));
   }
 
