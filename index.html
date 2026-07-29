@@ -35337,19 +35337,40 @@ function __startPencilAppWhenReady(attempt = 0) {
 // Start-Aufruf unten durch diesen Gate-Check; danach läuft alles
 // exakt wie vorher (LINK_EMPLOYEE/CURRENT_SHOP_ID lesen wie bisher
 // aus localStorage 'ps_link_agent' / 'ps_shop').
+// Login/Einladung/Freigabe laufen im EIGENEN Firebase-Projekt
+// "Beta Pencil Selling" (beta-pencil-selling) — komplett getrennt
+// vom Stats-Projekt (pencil-selling-stats-2f86e).
 // ═══════════════════════════════════════════════════════════════
+const BETA_FB_CONFIG = {
+  apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
+  authDomain: "beta-pencil-selling.firebaseapp.com",
+  projectId: "beta-pencil-selling",
+  storageBucket: "beta-pencil-selling.firebasestorage.app",
+  messagingSenderId: "154760755449",
+  appId: "1:154760755449:web:a4a006f738077eb5344a28"
+};
+
 function __psGateRender(html) {
   var el = document.getElementById('root');
   if (el) el.innerHTML = html;
 }
 
+function __psGetBetaApp() {
+  var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'beta'; });
+  return existing ? existing : window.firebase.initializeApp(BETA_FB_CONFIG, 'beta');
+}
+
+function __psGetBetaDb() {
+  if (window.__betaDb) return window.__betaDb;
+  window.__betaDb = window.firebase.firestore(__psGetBetaApp());
+  return window.__betaDb;
+}
+
 function __psGetAuth() {
   try {
-    if (window.__statsAuth) return window.__statsAuth;
-    var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'stats'; });
-    var app = existing ? existing : window.firebase.initializeApp(STATS_FB_CONFIG, 'stats');
-    window.__statsAuth = window.firebase.auth(app);
-    return window.__statsAuth;
+    if (window.__betaAuth) return window.__betaAuth;
+    window.__betaAuth = window.firebase.auth(__psGetBetaApp());
+    return window.__betaAuth;
   } catch (e) {
     console.error('Auth-Init fehlgeschlagen:', e);
     return null;
@@ -35434,7 +35455,7 @@ function __psRenderRegister(code, invite) {
       return auth.createUserWithEmailAndPassword(email, pw1);
     }).then(function (cred) {
       return cred.user.sendEmailVerification().then(function () {
-        var db = getStatsDb();
+        var db = __psGetBetaDb();
         return db.collection('users').doc(cred.user.uid).set({
           email: email,
           name: invite.name || '',
@@ -35496,7 +35517,7 @@ function __psAddFloatingLogout() {
 }
 
 function __psStartApprovedListener(uid, onApproved, onRevoked) {
-  var db = getStatsDb();
+  var db = __psGetBetaDb();
   var started = false;
   db.collection('users').doc(uid).onSnapshot(function (snap) {
     var d = snap.data();
@@ -35520,7 +35541,7 @@ function __PS_startAuthGate(startAppFn) {
   auth.onAuthStateChanged(function (user) {
     if (!user) {
       if (inviteCode) {
-        getStatsDb().collection('invites').doc(inviteCode).get().then(function (doc) {
+        __psGetBetaDb().collection('invites').doc(inviteCode).get().then(function (doc) {
           if (doc.exists && doc.data().status === 'open') {
             __psRenderRegister(inviteCode, doc.data());
           } else {
