@@ -35424,7 +35424,8 @@ function __psRenderLogin(prefillEmail) {
 }
 
 function __psRenderRegister(code, invite) {
-  var shopName = (SHOPS[invite.shopId] && SHOPS[invite.shopId].name) || invite.shopId || '–';
+  var shopName = invite.shop || (SHOPS[invite.shopId] && SHOPS[invite.shopId].name) || invite.shopId || '–';
+  var vollerName = ((invite.vorname || '') + ' ' + (invite.nachname || '')).trim();
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
       '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
@@ -35432,7 +35433,7 @@ function __psRenderRegister(code, invite) {
         '<p class="text-sm text-slate-500 mb-5">Einmalig registrieren</p>' +
         '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
         '<div class="text-sm text-slate-700 mb-3 space-y-0.5">' +
-          '<div><b>Name:</b> ' + (invite.name || '–') + '</div>' +
+          '<div><b>Name:</b> ' + (vollerName || '–') + '</div>' +
           '<div><b>E-Mail:</b> ' + invite.email + '</div>' +
           '<div><b>Shop:</b> ' + shopName + '</div>' +
         '</div>' +
@@ -35458,8 +35459,12 @@ function __psRenderRegister(code, invite) {
         var db = __psGetBetaDb();
         return db.collection('users').doc(cred.user.uid).set({
           email: email,
-          name: invite.name || '',
+          name: vollerName,
+          vorname: invite.vorname || '',
+          nachname: invite.nachname || '',
           shopId: invite.shopId || 'aalen',
+          shop: invite.shop || '',
+          shopwechsel: !!invite.shopwechsel,
           role: invite.role || 'verkaeufer',
           status: 'pending',
           createdAt: Date.now()
@@ -35542,7 +35547,7 @@ function __PS_startAuthGate(startAppFn) {
     if (!user) {
       if (inviteCode) {
         __psGetBetaDb().collection('invites').doc(inviteCode).get().then(function (doc) {
-          if (doc.exists && doc.data().status === 'open') {
+          if (doc.exists && doc.data().status === 'invited') {
             __psRenderRegister(inviteCode, doc.data());
           } else {
             __psRenderLogin('');
@@ -35569,6 +35574,7 @@ function __PS_startAuthGate(startAppFn) {
         try {
           localStorage.setItem('ps_link_agent', profile.name || '');
           localStorage.setItem('ps_shop', profile.shopId || 'aalen');
+          localStorage.setItem('ps_shopwechsel', profile.shopwechsel ? '1' : '0');
         } catch (e) {}
         __psAddFloatingLogout();
         startAppFn();
