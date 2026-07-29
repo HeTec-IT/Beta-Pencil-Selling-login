@@ -35345,7 +35345,7 @@ const PS_ADMIN_EMAIL = 'd.dasilva@hetec-gmbh.de';
 
 // Microsoft Entra Tenant-ID der HeTec GmbH (siehe Einrichtungsanleitung).
 // Client-ID/-Secret stehen NICHT hier, sondern nur in der Firebase Console.
-const MICROSOFT_TENANT_ID = "bffb3b9f-f04a-4553-a4bd-451341d982c3";
+const MICROSOFT_TENANT_ID = "HIER_TENANT_ID_EINTRAGEN";
 
 // Einladungscode aus der URL (?invite=CODE), falls vorhanden.
 const PS_INVITE_CODE = (() => {
@@ -35418,7 +35418,7 @@ function __psFriendlyAuthError(e) {
   if (code === 'auth/unauthorized-domain') return 'Diese Domain ist in Firebase Authentication nicht als autorisiert hinterlegt.';
   if (code === 'auth/operation-not-allowed') return 'Microsoft-Anmeldung ist im Firebase-Projekt noch nicht aktiviert.';
   if (code === 'auth/network-request-failed') return 'Netzwerkfehler. Bitte Internetverbindung pruefen und erneut versuchen.';
-  return 'Die Zugangsberechtigung konnte nicht geprueft werden. (' + (code || (e && e.message) || 'unbekannter Fehler') + ') Bitte erneut versuchen.';
+  return 'Die Zugangsberechtigung konnte nicht geprueft werden. Bitte erneut versuchen.';
 }
 
 function __psRenderAuth() {
