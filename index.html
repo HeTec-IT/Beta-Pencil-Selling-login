@@ -35385,6 +35385,8 @@ function __psShowError(msg) {
   if (box) {
     box.textContent = msg;
     box.classList.remove('hidden');
+  } else {
+    alert(msg);
   }
 }
 
@@ -35409,7 +35411,13 @@ function __psRenderAuth(mode, prefill) {
       (active ? 'bg-blue-600 text-white' : 'text-slate-500') + '">' + label + '</button>';
   }
   var formHtml = isRegister ? (
-    '<input id="ps-gate-vorname" type="text" placeholder="Vorname" value="' + (prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<select id="ps-gate-anrede" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' +
+      '<option value="">Anrede wählen…</option>' +
+      '<option value="Herr"' + (prefill.anrede === 'Herr' ? ' selected' : '') + '>Herr</option>' +
+      '<option value="Frau"' + (prefill.anrede === 'Frau' ? ' selected' : '') + '>Frau</option>' +
+      '<option value="Divers"' + (prefill.anrede === 'Divers' ? ' selected' : '') + '>Divers</option>' +
+    '</select>' +
+    '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" value="' + (prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<input id="ps-gate-nachname" type="text" placeholder="Nachname" value="' + (prefill.nachname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<input id="ps-gate-email" type="email" placeholder="E-Mail (@hetec-gmbh.de)" value="' + (prefill.email || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
@@ -35439,6 +35447,7 @@ function __psRenderAuth(mode, prefill) {
   Array.prototype.forEach.call(document.querySelectorAll('.ps-tab'), function (btn) {
     btn.onclick = function () {
       var vals = {
+        anrede: (document.getElementById('ps-gate-anrede') || {}).value,
         vorname: (document.getElementById('ps-gate-vorname') || {}).value,
         nachname: (document.getElementById('ps-gate-nachname') || {}).value,
         email: (document.getElementById('ps-gate-email') || {}).value
@@ -35449,14 +35458,16 @@ function __psRenderAuth(mode, prefill) {
 
   if (isRegister) {
     document.getElementById('ps-gate-submit').onclick = function () {
+      var anrede = document.getElementById('ps-gate-anrede').value;
       var vorname = document.getElementById('ps-gate-vorname').value.trim();
       var nachname = document.getElementById('ps-gate-nachname').value.trim();
       var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
       var pw = document.getElementById('ps-gate-pw').value;
       var shopId = document.getElementById('ps-gate-shop').value;
-      if (!vorname || !nachname || !email || !pw) { __psShowError('Bitte alle Felder ausfüllen.'); return; }
+      if (!anrede || !nachname || !email || !pw) { __psShowError('Bitte Anrede, Nachname, E-Mail und Passwort ausfüllen.'); return; }
       if (!/@hetec-gmbh\.de$/.test(email)) { __psShowError('Nur E-Mail-Adressen mit @hetec-gmbh.de erlaubt.'); return; }
       if (pw.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
+      var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
       var auth = __psGetAuth();
       auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
         return auth.createUserWithEmailAndPassword(email, pw);
@@ -35464,9 +35475,10 @@ function __psRenderAuth(mode, prefill) {
         return cred.user.sendEmailVerification().then(function () {
           return __psGetBetaDb().collection('users').doc(cred.user.uid).set({
             email: email,
+            anrede: anrede,
             vorname: vorname,
             nachname: nachname,
-            name: (vorname + ' ' + nachname).trim(),
+            name: displayName,
             shopId: shopId,
             shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
             role: 'verkaeufer',
@@ -35533,15 +35545,44 @@ function __psRenderWait(kind) {
 }
 
 function __psAddFloatingLogout() {
-  if (document.getElementById('ps-floating-logout')) return;
-  var btn = document.createElement('button');
-  btn.id = 'ps-floating-logout';
-  btn.textContent = '🔓 Abmelden';
-  btn.style.cssText = 'position:fixed;top:60px;right:12px;z-index:99999;background:rgba(15,23,42,0.75);color:#fff;font-size:11px;padding:5px 10px;border-radius:999px;border:none;';
-  btn.onclick = function () {
-    __psGetAuth().signOut().then(function () { location.reload(); });
-  };
-  document.body.appendChild(btn);
+  // Fügt ein reines Icon (kein Text, kein Overlay) als echtes Kind-Element
+  // in den bestehenden <header> von Pencil Selling ein – rechtsbündig, wie
+  // die anderen Icons dort. Ein MutationObserver setzt es automatisch neu,
+  // falls React den Header neu rendert und es dabei entfernen würde.
+  function ensureBtn() {
+    var header = document.querySelector('header');
+    if (!header) return;
+    var btn = document.getElementById('ps-logout-icon');
+    if (btn && header.contains(btn)) return;
+    btn = document.createElement('button');
+    btn.id = 'ps-logout-icon';
+    btn.type = 'button';
+    btn.title = 'Abmelden';
+    btn.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>';
+    btn.style.cssText = 'margin-left:auto;flex-shrink:0;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:#94a3b8;border-radius:8px;cursor:pointer;padding:0;';
+    btn.onmouseenter = function () { btn.style.background = '#fef2f2'; btn.style.color = '#dc2626'; };
+    btn.onmouseleave = function () { btn.style.background = 'transparent'; btn.style.color = '#94a3b8'; };
+    btn.onclick = function () {
+      if (!window.confirm('Wirklich abmelden?')) return;
+      __psGetAuth().signOut().then(function () { location.reload(); });
+    };
+    header.appendChild(btn);
+  }
+
+  var tries = 0;
+  var iv = setInterval(function () {
+    tries++;
+    var header = document.querySelector('header');
+    if (header) {
+      clearInterval(iv);
+      ensureBtn();
+      try {
+        new MutationObserver(function () { ensureBtn(); }).observe(header, { childList: true });
+      } catch (e) {}
+    } else if (tries > 100) {
+      clearInterval(iv);
+    }
+  }, 100);
 }
 
 function __PS_startAuthGate(startAppFn) {
@@ -35577,6 +35618,54 @@ function __PS_startAuthGate(startAppFn) {
     if (l) l.onclick = function () { auth.signOut().then(function () { location.reload(); }); };
   }
 
+  function renderCompleteProfile(user, isBootstrapAdmin) {
+    __psGateRender(
+      '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+        '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+          '<h1 class="text-xl font-bold text-slate-800 mb-1">Profil vervollständigen</h1>' +
+          '<p class="text-sm text-slate-500 mb-4">Einmalig – dein Name fehlt noch in deinem Konto.</p>' +
+          '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+          '<select id="ps-gate-anrede" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' +
+            '<option value="">Anrede wählen…</option>' +
+            '<option value="Herr">Herr</option>' +
+            '<option value="Frau">Frau</option>' +
+            '<option value="Divers">Divers</option>' +
+          '</select>' +
+          '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+          '<input id="ps-gate-nachname" type="text" placeholder="Nachname" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+          '<select id="ps-gate-shop" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' + __psShopOptionsHtml() + '</select>' +
+          '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Speichern</button>' +
+        '</div>' +
+      '</div>'
+    );
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var anrede = document.getElementById('ps-gate-anrede').value;
+      var vorname = document.getElementById('ps-gate-vorname').value.trim();
+      var nachname = document.getElementById('ps-gate-nachname').value.trim();
+      var shopId = document.getElementById('ps-gate-shop').value;
+      if (!anrede || !nachname) { __psShowError('Bitte Anrede und Nachname ausfüllen.'); return; }
+      var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
+      __psGetBetaDb().collection('users').doc(user.uid).set({
+        email: user.email,
+        anrede: anrede,
+        vorname: vorname,
+        nachname: nachname,
+        name: displayName,
+        shopId: shopId,
+        shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
+        role: isBootstrapAdmin ? 'admin' : 'verkaeufer',
+        status: 'pending',
+        active: false,
+        isTestUser: false,
+        createdAt: Date.now()
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
+      });
+      // Kein weiterer Schritt nötig: der onSnapshot-Listener unten reagiert
+      // automatisch auf das frisch gespeicherte Profil.
+    };
+  }
+
   auth.onAuthStateChanged(function (user) {
     if (!user) { __psRenderAuth('login'); return; }
     user.reload().then(function () {
@@ -35595,8 +35684,12 @@ function __PS_startAuthGate(startAppFn) {
         var isBootstrapAdmin = __psIsAdminEmail(user.email);
         __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
           var d = snap.data();
-          if ((d && d.active === true) || isBootstrapAdmin) {
-            startOnce(d || { name: user.email, shopId: 'aalen' });
+          if (!d) {
+            renderCompleteProfile(user, isBootstrapAdmin);
+            return;
+          }
+          if (d.active === true || isBootstrapAdmin) {
+            startOnce(d);
           } else if (appStarted) {
             auth.signOut().then(function () { location.reload(); });
           } else {
