@@ -35418,7 +35418,7 @@ function __psFriendlyAuthError(e) {
   if (code === 'auth/unauthorized-domain') return 'Diese Domain ist in Firebase Authentication nicht als autorisiert hinterlegt.';
   if (code === 'auth/operation-not-allowed') return 'Microsoft-Anmeldung ist im Firebase-Projekt noch nicht aktiviert.';
   if (code === 'auth/network-request-failed') return 'Netzwerkfehler. Bitte Internetverbindung pruefen und erneut versuchen.';
-  return 'Die Zugangsberechtigung konnte nicht geprueft werden. Bitte erneut versuchen.';
+  return 'Die Zugangsberechtigung konnte nicht geprueft werden. (' + (code || (e && e.message) || 'unbekannter Fehler') + ') Bitte erneut versuchen.';
 }
 
 function __psRenderAuth() {
