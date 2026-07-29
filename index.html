@@ -35417,7 +35417,10 @@ function __psRenderAuth(mode, prefill) {
     '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>'
   ) : (
     '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefill.email || '') + '" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<label class="flex items-center gap-2 mb-4 text-sm text-slate-600 cursor-pointer select-none">' +
+      '<input id="ps-gate-remember" type="checkbox" checked class="w-4 h-4" /> Zugangsdaten dauerhaft merken' +
+    '</label>' +
     '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm mb-2">Anmelden</button>' +
     '<button id="ps-gate-reset-btn" class="w-full text-blue-600 text-xs py-1">Passwort vergessen?</button>'
   );
@@ -35481,9 +35484,11 @@ function __psRenderAuth(mode, prefill) {
     document.getElementById('ps-gate-submit').onclick = function () {
       var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
       var pw = document.getElementById('ps-gate-pw').value;
+      var remember = document.getElementById('ps-gate-remember').checked;
       if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
       var auth = __psGetAuth();
-      auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+      var persistence = remember ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION;
+      auth.setPersistence(persistence).then(function () {
         return auth.signInWithEmailAndPassword(email, pw);
       }).catch(function (e) {
         __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
@@ -35532,7 +35537,7 @@ function __psAddFloatingLogout() {
   var btn = document.createElement('button');
   btn.id = 'ps-floating-logout';
   btn.textContent = '🔓 Abmelden';
-  btn.style.cssText = 'position:fixed;bottom:8px;left:8px;z-index:99999;background:rgba(15,23,42,0.75);color:#fff;font-size:11px;padding:5px 10px;border-radius:999px;border:none;';
+  btn.style.cssText = 'position:fixed;top:60px;right:12px;z-index:99999;background:rgba(15,23,42,0.75);color:#fff;font-size:11px;padding:5px 10px;border-radius:999px;border:none;';
   btn.onclick = function () {
     __psGetAuth().signOut().then(function () { location.reload(); });
   };
