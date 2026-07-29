@@ -35555,6 +35555,23 @@ function __PS_startAuthGate(startAppFn) {
     startAppFn();
   }
 
+  function showFatal(err) {
+    __psGateRender(
+      '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4 text-center">' +
+        '<div class="max-w-sm">' +
+          '<h1 class="text-lg font-bold text-slate-800 mb-2">Verbindung fehlgeschlagen</h1>' +
+          '<p class="text-sm text-slate-500 mb-4">' + ((err && err.message) ? err.message : 'Unbekannter Fehler. Bitte erneut versuchen.') + '</p>' +
+          '<button id="ps-gate-retry" class="bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg mr-2">Erneut versuchen</button>' +
+          '<button id="ps-gate-logout2" class="text-slate-400 text-sm underline">Abmelden</button>' +
+        '</div>' +
+      '</div>'
+    );
+    var r = document.getElementById('ps-gate-retry');
+    if (r) r.onclick = function () { location.reload(); };
+    var l = document.getElementById('ps-gate-logout2');
+    if (l) l.onclick = function () { auth.signOut().then(function () { location.reload(); }); };
+  }
+
   auth.onAuthStateChanged(function (user) {
     if (!user) { __psRenderAuth('login'); return; }
     user.reload().then(function () {
@@ -35567,18 +35584,22 @@ function __PS_startAuthGate(startAppFn) {
         }, 4000);
         return;
       }
-      var isBootstrapAdmin = __psIsAdminEmail(user.email);
-      __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
-        var d = snap.data();
-        if ((d && d.active === true) || isBootstrapAdmin) {
-          startOnce(d || { name: user.email, shopId: 'aalen' });
-        } else if (appStarted) {
-          auth.signOut().then(function () { location.reload(); });
-        } else {
-          __psRenderWait('approval');
-        }
-      });
-    });
+      // Token neu holen: sonst sieht Firestore kurzzeitig noch die alte
+      // email_verified=false-Eigenschaft und blockiert die Nutzer-Abfrage.
+      user.getIdToken(true).then(function () {
+        var isBootstrapAdmin = __psIsAdminEmail(user.email);
+        __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
+          var d = snap.data();
+          if ((d && d.active === true) || isBootstrapAdmin) {
+            startOnce(d || { name: user.email, shopId: 'aalen' });
+          } else if (appStarted) {
+            auth.signOut().then(function () { location.reload(); });
+          } else {
+            __psRenderWait('approval');
+          }
+        }, function (err) { showFatal(err); });
+      }).catch(showFatal);
+    }).catch(showFatal);
   });
 }
 
