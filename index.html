@@ -228,7 +228,6 @@
     <!-- Firebase für Aktionsmappe-Verknüpfung -->
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
-    <!-- Firebase Auth: Einladungs-Login (Beta-Projekt, eigenes App 'auth') -->
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
     <!-- pdf-lib: Unterschrift in bestehendes Angebots-PDF stempeln (v51.4 "PDF finalisieren") -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
@@ -4538,7 +4537,8 @@ const SHOPS = {
     name: 'o2 Shop Stuttgart-Vaihingen',
     ort: 'Stuttgart-Vaihingen',
     adresse: 'Robert-Koch-Straße 2, 70563 Stuttgart',
-    tel: '0711 - 78781490'
+    tel: '0711 - 78781490',
+instagram: 'https://www.instagram.com/o2.shop_vaihingen/'
   },
   traunreut: {
     id: 'traunreut',
@@ -18389,11 +18389,13 @@ function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
+      // v74.1 FIX: NUR die 2.-Jahr-Strokes auf diesen Canvas (offerCost3Ref) zeichnen.
+      // Der frühere zweite Aufruf mit 'cost_smartphone' lief auf DENSELBEN Canvas und
+      // rief intern clearRect auf → er löschte die gerade gezeichneten 2.-Jahr-Striche
+      // wieder weg. Das Smartphone-Feld hat seinen EIGENEN Canvas (offerCostSmartphoneRef)
+      // und wird dort separat gezeichnet – hier hat es nichts verloren.
       try {
         redrawCanvas(canvas, drawnStrokes['cost_monatlich2'], 1, 'cost_monatlich2');
-      } catch (e) {}
-      try {
-        redrawCanvas(canvas, drawnStrokes['cost_smartphone'], 1, 'cost_smartphone');
       } catch (e) {}
     };
 
@@ -18452,7 +18454,7 @@ function App() {
   const PA_UPLOAD_URL = 'PASTE_POWER_AUTOMATE_FLOW_URL_HERE';
   const PA_SHARED_KEY = ''; // optional: z.B. 'hetec-xyz-123'
   // Archiv-Postfach: hierhin schickt der Mitarbeiter das abgeschlossene Angebot (Power Automate sortiert es weiter)
-  const ARCHIV_EMAIL = 'o2-shop-aalen@hetec-gmbh.de';
+  const ARCHIV_EMAIL = 'pencil-selling@hetec-gmbh.de';
   // SharePoint-Ordner zum direkten Abrufen der archivierten PDFs
   const ARCHIV_URL_ABSCHLUESSE = 'https://hetecgmbh.sharepoint.com/:f:/s/Hetec-Shop-GmbH/IgDeb7bYA8bER5HhUGMDPe3uAWrUlPmHv9e9FV7lUW2WpDA';
   const ARCHIV_URL_ANGEBOTE = 'https://hetecgmbh.sharepoint.com/:f:/s/Hetec-Shop-GmbH/IgDFo0zkOK2eS4uIdZRFQ0syAaIPdeE79uU3AGlIgWNjgr8';
@@ -26305,7 +26307,13 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     } catch (e) {
       _shop = '';
     }
-    return _shop ? `${ARCHIV_DATEI_PREFIX}${_shop}_${_typ}_${_datum}_${_kenn}.pdf` : `${ARCHIV_DATEI_PREFIX}${_typ}_${_datum}_${_kenn}.pdf`;
+    // v74 – VARIANTE B: Kennung (Rufnummer/Kundenname) direkt hinter das
+    //        PENCIL_-Präfix, damit sie in Outlook/SharePoint sofort sichtbar ist.
+    //        PENCIL_[Kennung]_[Shop]_[Typ]_[Datum].pdf
+    //          [0]     [1]     [2]   [3]    [4]
+    //        >>> FLOW ANPASSEN: Shop = split[2], Typ = split[3] (vorher [1]/[2]).
+    //        Das PENCIL_-Präfix bleibt am ANFANG – Trigger-Filter bleibt intakt.
+    return _shop ? `${ARCHIV_DATEI_PREFIX}${_kenn}_${_shop}_${_typ}_${_datum}.pdf` : `${ARCHIV_DATEI_PREFIX}${_kenn}_${_typ}_${_datum}.pdf`;
   };
   const ARCHIV_BETREFF_FELDER = 4; // NIEMALS ändern
   const buildArchivBetreff = (typ, datum, rufnummer, agent) => {
@@ -35291,607 +35299,13 @@ if (!window.__printListenersRegistered) {
   }); // end afterprint
 } // end __printListenersRegistered guard
 
-
-// ===== LOGIN-SYSTEM (Einladung, Beta-Firebase 'auth') – Anfang =====
-// ═══════════════════════════════════════════════════════════════════════════
-//  PENCIL SELLING – LOGIN & ZUGANGSKONTROLLE (o2 Beta-Test)
-//  Eigenständiges Modul. Nutzt ein SEPARATES Firebase-Projekt ('auth'),
-//  völlig getrennt von Stats und Aktionsmappe. Ändert die App-Logik nicht –
-//  es schaltet nur eine Anmeldung DAVOR.
-// ═══════════════════════════════════════════════════════════════════════════
-(function () {
-  const AUTH_FB_CONFIG = {
-    apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
-    authDomain: "beta-pencil-selling.firebaseapp.com",
-    projectId: "beta-pencil-selling",
-    storageBucket: "beta-pencil-selling.firebasestorage.app",
-    messagingSenderId: "154760755449",
-    appId: "1:154760755449:web:a4a006f738077eb5344a28"
-  };
-
-  const ALLOWED_DOMAIN = "hetec-gmbh.de";
-  const ADMIN_EMAILS = ["d.dasilva@hetec-gmbh.de"];
-
-  // ── Eindeutige, browser-erlaubte Geräte-Kennung (statt MAC) ──
-  function getDeviceId() {
-    try {
-      let id = localStorage.getItem("ps_device_id");
-      if (!id) {
-        id = "dev_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-        localStorage.setItem("ps_device_id", id);
-      }
-      return id;
-    } catch (e) {
-      return "dev_nostorage_" + Date.now();
-    }
-  }
-
-  function getAuthApp() {
-    const existing = window.firebase?.apps?.find(a => a.name === "auth");
-    return existing ? existing : window.firebase.initializeApp(AUTH_FB_CONFIG, "auth");
-  }
-
-  window.__psAuth = function () {
-    const app = getAuthApp();
-    return { auth: window.firebase.auth(app), db: window.firebase.firestore(app) };
-  };
-
-  const isAdmin = (email) => ADMIN_EMAILS.includes((email || "").toLowerCase());
-  const emailOk = (email) => (email || "").toLowerCase().trim().endsWith("@" + ALLOWED_DOMAIN);
-
-  // Kurze deutsche Fehlermeldungen statt Firebase-Codes
-  function friendly(err) {
-    const c = (err && err.code) || "";
-    const map = {
-      "auth/invalid-email": "Die E-Mail-Adresse ist ungültig.",
-      "auth/user-disabled": "Dieses Konto wurde gesperrt. Bitte an den Admin wenden.",
-      "auth/user-not-found": "Kein Konto mit dieser E-Mail gefunden.",
-      "auth/wrong-password": "Passwort falsch.",
-      "auth/invalid-credential": "E-Mail oder Passwort falsch.",
-      "auth/email-already-in-use": "Für diese E-Mail existiert bereits ein Konto. Bitte anmelden.",
-      "auth/weak-password": "Das Passwort ist zu schwach (mindestens 6 Zeichen).",
-      "auth/too-many-requests": "Zu viele Versuche. Bitte kurz warten und erneut versuchen.",
-      "auth/network-request-failed": "Keine Verbindung. Bitte Internet prüfen."
-    };
-    return map[c] || (err && err.message) || "Unbekannter Fehler.";
-  }
-
-  const styles = {
-    wrap: { position: "fixed", inset: 0, zIndex: 100000, background: "linear-gradient(160deg,#0A0A8C 0%,#000068 55%,#00003E 100%)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "system-ui,-apple-system,Segoe UI,Roboto,sans-serif", padding: "20px", overflowY: "auto" },
-    card: { width: "100%", maxWidth: "420px", background: "#ffffff", borderRadius: "20px", boxShadow: "0 24px 60px rgba(0,0,0,0.35)", padding: "32px 28px", boxSizing: "border-box" },
-    logoWrap: { display: "flex", flexDirection: "column", alignItems: "center", marginBottom: "22px" },
-    title: { fontSize: "20px", fontWeight: 800, color: "#0A1A3A", margin: "14px 0 2px", textAlign: "center" },
-    sub: { fontSize: "13px", color: "#5B6B8C", margin: 0, textAlign: "center", letterSpacing: "0.06em", textTransform: "uppercase", fontWeight: 600 },
-    label: { fontSize: "12px", fontWeight: 700, color: "#334155", margin: "14px 0 6px", display: "block" },
-    input: { width: "100%", boxSizing: "border-box", padding: "13px 14px", fontSize: "15px", border: "2px solid #E2E8F0", borderRadius: "12px", outline: "none", transition: "border-color .15s" },
-    btn: { width: "100%", boxSizing: "border-box", padding: "14px", fontSize: "15px", fontWeight: 700, color: "#fff", background: "linear-gradient(135deg,#00A8E0,#0060C0)", border: "none", borderRadius: "12px", cursor: "pointer", marginTop: "20px" },
-    btnGhost: { width: "100%", boxSizing: "border-box", padding: "12px", fontSize: "14px", fontWeight: 600, color: "#00A8E0", background: "transparent", border: "none", cursor: "pointer", marginTop: "10px" },
-    err: { background: "#FEF2F2", border: "1px solid #FECACA", color: "#B91C1C", fontSize: "13px", borderRadius: "10px", padding: "10px 12px", marginTop: "14px" },
-    ok: { background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#15803D", fontSize: "13px", borderRadius: "10px", padding: "10px 12px", marginTop: "14px" },
-    checkRow: { display: "flex", alignItems: "center", gap: "8px", marginTop: "14px", fontSize: "13px", color: "#334155" },
-    muted: { fontSize: "12px", color: "#94A3B8", textAlign: "center", marginTop: "18px", lineHeight: 1.5 }
-  };
-
-  function Logo() {
-    return React.createElement("div", { style: styles.logoWrap },
-      React.createElement("div", { dangerouslySetInnerHTML: { __html:
-        '<svg width="72" height="72" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="lgp" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3DE0FF"/><stop offset="1" stop-color="#00A8E0"/></linearGradient></defs><rect width="512" height="512" rx="112" fill="#000068"/><g transform="translate(256 250)"><circle cx="0" cy="0" r="168" fill="none" stroke="#3DE0FF" stroke-width="16" opacity="0.9"/><g transform="rotate(-38) scale(1.12)"><rect x="-24" y="-150" width="48" height="252" rx="14" fill="url(#lgp)"/><rect x="-28" y="102" width="56" height="30" rx="8" fill="#E8EEF5"/><path d="M-28 132 L28 132 L8 188 L-8 188 Z" fill="#DCE6F2"/><path d="M-8 188 L8 188 L0 212 Z" fill="#0A1A3A"/></g><rect x="-150" y="150" width="300" height="14" rx="7" fill="#fff" opacity="0.88"/><rect x="-150" y="150" width="120" height="14" rx="7" fill="#3DE0FF"/></g></svg>'
-      } }),
-      React.createElement("div", { style: styles.title }, "Pencil Selling"),
-      React.createElement("div", { style: styles.sub }, "o2 Edition")
-    );
-  }
-
-  function Field(props) {
-    const locked = !!props.disabled;
-    return React.createElement("div", null,
-      React.createElement("label", { style: styles.label }, props.label),
-      React.createElement("input", {
-        style: locked ? { ...styles.input, background: "#F1F5F9", color: "#64748B", cursor: "not-allowed" } : styles.input,
-        type: props.type || "text", value: props.value,
-        placeholder: props.placeholder || "", autoComplete: props.autoComplete || "off",
-        disabled: locked, readOnly: locked,
-        onChange: e => props.onChange(e.target.value),
-        onFocus: e => { if (!locked) e.target.style.borderColor = "#00A8E0"; },
-        onBlur: e => { if (!locked) e.target.style.borderColor = "#E2E8F0"; },
-        onKeyDown: e => { if (e.key === "Enter" && props.onEnter) props.onEnter(); }
-      })
-    );
-  }
-
-  // ═══════════════ LOGIN GATE ═══════════════
-  function LoginGate() {
-    const { useState, useEffect, useRef } = React;
-    const [phase, setPhase] = useState("loading"); // loading | login | register | verify | pending | blocked | denied | ready | invite_used | invite_bad
-    const [email, setEmail] = useState("");
-    const [pw, setPw] = useState("");
-    const [pw2, setPw2] = useState("");
-    const [stay, setStay] = useState(true);
-    const [err, setErr] = useState("");
-    const [msg, setMsg] = useState("");
-    const [busy, setBusy] = useState(false);
-    const [user, setUser] = useState(null);
-    // ── Einladung (Einmal-Link) ──
-    const [inviteCode, setInviteCode] = useState("");   // Code aus ?einladung=
-    const [invite, setInvite] = useState(null);          // {vorname,nachname,email,shop,status,...}
-    const [inviteReady, setInviteReady] = useState(false); // Einladung wurde geprüft
-    const fb = useRef(null);
-
-    useEffect(() => {
-      try { fb.current = window.__psAuth(); } catch (e) { setErr("Firebase Auth konnte nicht geladen werden."); setPhase("login"); return; }
-      const { auth, db } = fb.current;
-
-      // 1) Einladungs-Code aus der URL lesen und in Firebase nachschlagen
-      let cancelled = false;
-      (async () => {
-        let code = "";
-        try { code = (new URLSearchParams(window.location.search || "").get("einladung") || "").trim(); } catch (e) {}
-        if (code) {
-          setInviteCode(code);
-          try {
-            const invSnap = await db.collection("invites").doc(code).get();
-            if (!cancelled) {
-              if (invSnap.exists) {
-                const d = invSnap.data() || {};
-                setInvite(Object.assign({ __id: code }, d));
-                // E-Mail aus der Einladung fest übernehmen (nicht änderbar)
-                if (d.email) setEmail(String(d.email).toLowerCase());
-              } else {
-                setInvite(null); // Code existiert nicht
-              }
-            }
-          } catch (e) { if (!cancelled) setInvite(null); }
-        }
-        if (!cancelled) setInviteReady(true);
-      })();
-
-      // 2) Anmeldestatus beobachten
-      const unsub = auth.onAuthStateChanged(async (u) => {
-        if (!u) { /* Startbildschirm entscheidet sich weiter unten via inviteReady */ if (!cancelled) evaluateStart(); return; }
-        await evaluateUser(u);
-      });
-      return () => { cancelled = true; unsub && unsub(); };
-    }, []);
-
-    // Startbildschirm bestimmen, sobald Einladung geprüft ist und niemand angemeldet ist
-    function evaluateStart() {
-      // Wird über einen Effekt getriggert, sobald inviteReady true wird
-      setPhase("login");
-    }
-
-    // Sobald die Einladung geprüft ist und niemand angemeldet ist:
-    // Bei gültiger, unverbrauchter Einladung direkt zur Registrierung mit vorausgefüllten Daten.
-    useEffect(() => {
-      if (!inviteReady) return;
-      // Nur eingreifen, wenn wir noch auf dem Start-/Login-Screen sind (nicht wenn schon angemeldet)
-      setPhase(prev => {
-        if (prev === "loading" || prev === "login") {
-          if (inviteCode) {
-            if (!invite) return "invite_bad";       // Code unbekannt/gelöscht
-            if (invite.status === "used") return "invite_used"; // schon verbraucht
-            return "register";                        // gültige, offene Einladung -> Registrierung
-          }
-          return "login"; // kein Code -> nur Anmeldung (kein Registrieren)
-        }
-        return prev;
-      });
-    }, [inviteReady, invite, inviteCode]);
-
-    async function evaluateUser(u) {
-      setUser(u);
-      try { await u.reload(); } catch (e) {}
-      if (!u.emailVerified) { setPhase("verify"); return; }
-      const { db } = fb.current;
-      const ref = db.collection("users").doc(u.uid);
-      let snap;
-      try { snap = await ref.get(); } catch (e) { setErr(friendly(e)); setPhase("login"); return; }
-      const devId = getDeviceId();
-      if (!snap.exists) {
-        // Erstes verifiziertes Login -> Datensatz anlegen, Gerät binden, auf Freigabe warten
-        // Einladungsdaten (Name/Shop) mit übernehmen, falls vorhanden
-        const inv = invite || {};
-        const newDoc = {
-          email: (u.email || "").toLowerCase(),
-          status: isAdmin(u.email) ? "approved" : "pending",
-          deviceId: devId,
-          createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-          lastLogin: window.firebase.firestore.FieldValue.serverTimestamp()
-        };
-        if (inv.vorname) newDoc.vorname = inv.vorname;
-        if (inv.nachname) newDoc.nachname = inv.nachname;
-        if (inv.shop) newDoc.shop = inv.shop;
-        if (inv.shopwechsel != null) newDoc.shopwechsel = !!inv.shopwechsel;
-        if (inviteCode) newDoc.inviteCode = inviteCode;
-        try {
-          await ref.set(newDoc);
-        } catch (e) { setErr(friendly(e)); setPhase("login"); return; }
-        // Einladung als VERBRAUCHT markieren und fest mit dem Konto verknüpfen (Einmal-Link)
-        if (inviteCode) {
-          try {
-            await db.collection("invites").doc(inviteCode).update({
-              status: "used",
-              usedByUid: u.uid,
-              usedByEmail: (u.email || "").toLowerCase(),
-              usedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-            });
-          } catch (e) { /* nicht kritisch für den Login des Mitarbeiters */ }
-        }
-        setPhase(isAdmin(u.email) ? "ready" : "pending");
-        return;
-      }
-      const data = snap.data() || {};
-      if (data.status === "blocked") { setPhase("blocked"); return; }
-      // Geräte-Bindung prüfen
-      if (data.deviceId && data.deviceId !== devId) { setPhase("denied"); return; }
-      if (!data.deviceId) { try { await ref.update({ deviceId: devId }); } catch (e) {} }
-      if (data.status !== "approved" && !isAdmin(u.email)) { setPhase("pending"); return; }
-      try { await ref.update({ lastLogin: window.firebase.firestore.FieldValue.serverTimestamp() }); } catch (e) {}
-      setPhase("ready");
-    }
-
-    async function doRegister() {
-      setErr(""); setMsg("");
-      // Registrierung nur mit gültiger, unverbrauchter Einladung
-      if (!inviteCode) { setErr("Zum Registrieren brauchst du einen Einladungs-Link. Bitte wende dich an deinen Administrator."); return; }
-      if (!invite) { setErr("Diese Einladung ist ungültig oder wurde gelöscht. Bitte wende dich an deinen Administrator."); return; }
-      if (invite.status === "used") { setPhase("invite_used"); return; }
-      // E-Mail muss zur Einladung passen (sie ist fest vorgegeben)
-      const invMail = String(invite.email || "").toLowerCase().trim();
-      const useMail = invMail || email.toLowerCase().trim();
-      if (invMail && email.toLowerCase().trim() !== invMail) { setErr("Bitte die eingeladene E-Mail-Adresse verwenden: " + invMail); return; }
-      if (!emailOk(useMail)) { setErr("Bitte deine geschäftliche @" + ALLOWED_DOMAIN + " Adresse verwenden."); return; }
-      if (pw.length < 6) { setErr("Passwort muss mindestens 6 Zeichen haben."); return; }
-      if (pw !== pw2) { setErr("Die Passwörter stimmen nicht überein."); return; }
-      setBusy(true);
-      const { auth } = fb.current;
-      try {
-        await auth.setPersistence(stay ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION);
-        const cred = await auth.createUserWithEmailAndPassword(useMail, pw);
-        await cred.user.sendEmailVerification();
-        setMsg("Bestätigungs-E-Mail gesendet. Bitte Postfach (auch Junk/Spam) prüfen und auf den Link klicken.");
-        setPhase("verify");
-      } catch (e) { setErr(friendly(e)); }
-      setBusy(false);
-    }
-
-    async function doLogin() {
-      setErr(""); setMsg("");
-      if (!emailOk(email)) { setErr("Bitte deine geschäftliche @" + ALLOWED_DOMAIN + " Adresse verwenden."); return; }
-      setBusy(true);
-      const { auth } = fb.current;
-      try {
-        await auth.setPersistence(stay ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION);
-        await auth.signInWithEmailAndPassword(email.toLowerCase().trim(), pw);
-        // onAuthStateChanged übernimmt danach
-      } catch (e) { setErr(friendly(e)); setBusy(false); }
-    }
-
-    async function resendVerify() {
-      setErr(""); setMsg("");
-      try { await fb.current.auth.currentUser.sendEmailVerification(); setMsg("Bestätigungs-E-Mail erneut gesendet."); }
-      catch (e) { setErr(friendly(e)); }
-    }
-
-    async function checkVerified() {
-      setErr(""); setMsg(""); setBusy(true);
-      try {
-        await fb.current.auth.currentUser.reload();
-        const u = fb.current.auth.currentUser;
-        if (u.emailVerified) { await evaluateUser(u); } else { setErr("Noch nicht bestätigt. Bitte zuerst den Link in der E-Mail anklicken."); }
-      } catch (e) { setErr(friendly(e)); }
-      setBusy(false);
-    }
-
-    async function doLogout() {
-      try { await fb.current.auth.signOut(); } catch (e) {}
-      setEmail(""); setPw(""); setPw2(""); setErr(""); setMsg(""); setPhase("login");
-    }
-
-    async function doReset() {
-      setErr(""); setMsg("");
-      if (!emailOk(email)) { setErr("Bitte zuerst deine @" + ALLOWED_DOMAIN + " E-Mail oben eintragen."); return; }
-      try { await fb.current.auth.sendPasswordResetEmail(email.toLowerCase().trim()); setMsg("E-Mail zum Zurücksetzen gesendet."); }
-      catch (e) { setErr(friendly(e)); }
-    }
-
-    // ── App ist freigeschaltet: echte Pencil-Selling-App rendern ──
-    if (phase === "ready") {
-      return React.createElement(window.__PencilApp, { __onLogout: doLogout, __isAdmin: isAdmin(user && user.email), __openAdmin: () => window.__psOpenAdmin && window.__psOpenAdmin() });
-    }
-
-    const box = (children) => React.createElement("div", { style: styles.wrap }, React.createElement("div", { style: styles.card }, React.createElement(Logo), children));
-
-    if (phase === "loading") {
-      return box(React.createElement("p", { style: { textAlign: "center", color: "#64748B", fontSize: "14px" } }, "Einen Moment…"));
-    }
-
-    if (phase === "verify") {
-      return box(React.createElement("div", null,
-        React.createElement("p", { style: { fontSize: "14px", color: "#334155", lineHeight: 1.6, textAlign: "center" } },
-          "Wir haben dir eine Bestätigungs-E-Mail geschickt. Öffne den Link darin, danach hier auf ", React.createElement("b", null, "„Ich habe bestätigt“"), " tippen."),
-        msg && React.createElement("div", { style: styles.ok }, msg),
-        err && React.createElement("div", { style: styles.err }, err),
-        React.createElement("button", { style: { ...styles.btn, opacity: busy ? 0.6 : 1 }, disabled: busy, onClick: checkVerified }, busy ? "Prüfe…" : "Ich habe bestätigt"),
-        React.createElement("button", { style: styles.btnGhost, onClick: resendVerify }, "E-Mail erneut senden"),
-        React.createElement("button", { style: styles.btnGhost, onClick: doLogout }, "Abbrechen")
-      ));
-    }
-
-    if (phase === "pending") {
-      return box(React.createElement("div", null,
-        React.createElement("div", { style: styles.ok }, "Dein Konto wurde erstellt und wartet auf Freigabe durch den Administrator."),
-        React.createElement("p", { style: styles.muted }, "Sobald du freigeschaltet bist, kannst du dich anmelden. Du kannst dieses Fenster schließen."),
-        React.createElement("button", { style: styles.btnGhost, onClick: checkVerified }, "Status neu prüfen"),
-        React.createElement("button", { style: styles.btnGhost, onClick: doLogout }, "Abmelden")
-      ));
-    }
-
-    if (phase === "blocked") {
-      return box(React.createElement("div", null,
-        React.createElement("div", { style: styles.err }, "Dieses Konto wurde gesperrt. Bitte an den Administrator wenden."),
-        React.createElement("button", { style: styles.btnGhost, onClick: doLogout }, "Abmelden")
-      ));
-    }
-
-    if (phase === "denied") {
-      return box(React.createElement("div", null,
-        React.createElement("div", { style: styles.err }, "Dieses Konto ist an ein anderes Gerät gebunden. Anmeldung auf diesem Gerät ist nicht erlaubt."),
-        React.createElement("p", { style: styles.muted }, "Der Administrator kann die Gerätebindung im Admin-Bereich zurücksetzen."),
-        React.createElement("button", { style: styles.btnGhost, onClick: doLogout }, "Abmelden")
-      ));
-    }
-
-    if (phase === "invite_used") {
-      return box(React.createElement("div", null,
-        React.createElement("div", { style: styles.err }, "Diese Einladung wurde bereits verwendet."),
-        React.createElement("p", { style: { fontSize: "14px", color: "#334155", lineHeight: 1.6, textAlign: "center" } },
-          "Wenn du dich bereits registriert hast, melde dich einfach mit ", React.createElement("b", null, "E-Mail und Passwort"), " an."),
-        React.createElement("button", { style: styles.btn, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Zur Anmeldung"),
-        React.createElement("p", { style: styles.muted }, "Brauchst du eine neue Einladung? Bitte an den Administrator wenden.")
-      ));
-    }
-
-    if (phase === "invite_bad") {
-      return box(React.createElement("div", null,
-        React.createElement("div", { style: styles.err }, "Dieser Einladungs-Link ist ungültig oder wurde gelöscht."),
-        React.createElement("p", { style: { fontSize: "14px", color: "#334155", lineHeight: 1.6, textAlign: "center" } },
-          "Bitte prüfe, ob du den vollständigen Link geöffnet hast, oder fordere eine neue Einladung an."),
-        React.createElement("button", { style: styles.btnGhost, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Zur Anmeldung")
-      ));
-    }
-
-    // login | register
-    const isReg = phase === "register";
-    const inviteName = invite ? [invite.vorname, invite.nachname].filter(Boolean).join(" ") : "";
-    const emailLocked = isReg && !!(invite && invite.email); // E-Mail bei Einladung fest
-    return box(React.createElement("div", null,
-      // Einladungs-Banner (nur bei Registrierung mit gültiger Einladung)
-      isReg && invite && React.createElement("div", {
-        style: { background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: "12px", padding: "12px 14px", marginBottom: "14px" }
-      },
-        React.createElement("div", { style: { fontSize: "13px", fontWeight: 800, color: "#1E3A8A", marginBottom: "4px" } }, "Willkommen" + (inviteName ? ", " + inviteName : "") + "!"),
-        React.createElement("div", { style: { fontSize: "12.5px", color: "#334155", lineHeight: 1.5 } },
-          "Lege jetzt dein Passwort fest, um deinen Zugang zu aktivieren.",
-          invite.shop ? React.createElement("span", null, " Shop: ", React.createElement("b", null, invite.shop)) : null
-        )
-      ),
-      React.createElement(Field, { label: "Geschäftliche E-Mail", type: "email", value: email, placeholder: "vorname@" + ALLOWED_DOMAIN, autoComplete: "username", onChange: emailLocked ? (() => {}) : setEmail, onEnter: isReg ? doRegister : doLogin, disabled: emailLocked }),
-      React.createElement(Field, { label: "Passwort", type: "password", value: pw, autoComplete: isReg ? "new-password" : "current-password", onChange: setPw, onEnter: isReg ? doRegister : doLogin }),
-      isReg && React.createElement(Field, { label: "Passwort bestätigen", type: "password", value: pw2, autoComplete: "new-password", onChange: setPw2, onEnter: doRegister }),
-      React.createElement("label", { style: styles.checkRow },
-        React.createElement("input", { type: "checkbox", checked: stay, onChange: e => setStay(e.target.checked) }),
-        "Angemeldet bleiben"),
-      err && React.createElement("div", { style: styles.err }, err),
-      msg && React.createElement("div", { style: styles.ok }, msg),
-      React.createElement("button", { style: { ...styles.btn, opacity: busy ? 0.6 : 1 }, disabled: busy, onClick: isReg ? doRegister : doLogin },
-        busy ? "Bitte warten…" : (isReg ? "Zugang aktivieren" : "Anmelden")),
-      isReg
-        ? React.createElement("button", { style: styles.btnGhost, onClick: () => { setPhase("login"); setErr(""); setMsg(""); } }, "Ich habe schon ein Konto – anmelden")
-        : React.createElement("div", null,
-            React.createElement("button", { style: { ...styles.btnGhost, color: "#94A3B8" }, onClick: doReset }, "Passwort vergessen?")
-          ),
-      React.createElement("p", { style: styles.muted }, isReg ? ("Zugang nur mit Einladung. Nur für @" + ALLOWED_DOMAIN + " Adressen.") : ("Anmeldung für bereits registrierte Mitarbeiter. Neue Zugänge nur per Einladungs-Link."))
-    ));
-  }
-
-  window.__PencilLoginGate = LoginGate;
-})();
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  ADMIN-BEREICH – Mitarbeiter freigeben / sperren / löschen / Gerät lösen
-//  Nur sichtbar für ADMIN_EMAILS. Öffnet als Overlay über der App.
-// ═══════════════════════════════════════════════════════════════════════════
-(function () {
-  const s = {
-    overlay: { position: "fixed", inset: 0, zIndex: 100001, background: "rgba(10,10,40,0.55)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "24px", overflowY: "auto", fontFamily: "system-ui,-apple-system,Segoe UI,Roboto,sans-serif" },
-    panel: { width: "100%", maxWidth: "760px", background: "#fff", borderRadius: "18px", boxShadow: "0 24px 60px rgba(0,0,0,0.3)", padding: "24px", boxSizing: "border-box", marginTop: "10px" },
-    head: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px" },
-    h: { fontSize: "18px", fontWeight: 800, color: "#0A1A3A", margin: 0 },
-    x: { border: "none", background: "#F1F5F9", width: "36px", height: "36px", borderRadius: "10px", cursor: "pointer", fontSize: "18px", color: "#475569" },
-    row: { display: "grid", gridTemplateColumns: "1fr auto", gap: "12px", alignItems: "center", padding: "14px 12px", border: "1px solid #E2E8F0", borderRadius: "12px", marginBottom: "10px" },
-    email: { fontSize: "14px", fontWeight: 700, color: "#0F172A", wordBreak: "break-all" },
-    meta: { fontSize: "12px", color: "#64748B", marginTop: "3px" },
-    badge: (bg, col) => ({ display: "inline-block", fontSize: "11px", fontWeight: 700, padding: "2px 8px", borderRadius: "999px", background: bg, color: col, marginRight: "6px" }),
-    btns: { display: "flex", gap: "6px", flexWrap: "wrap", justifyContent: "flex-end" },
-    b: (bg) => ({ border: "none", borderRadius: "9px", padding: "8px 12px", fontSize: "12px", fontWeight: 700, color: "#fff", background: bg, cursor: "pointer" }),
-    empty: { textAlign: "center", color: "#94A3B8", fontSize: "14px", padding: "30px 0" },
-    tabRow: { display: "flex", gap: "8px", marginBottom: "16px", flexWrap: "wrap" },
-    tab: (on) => ({ border: "none", borderRadius: "999px", padding: "7px 14px", fontSize: "13px", fontWeight: 700, cursor: "pointer", background: on ? "#00A8E0" : "#F1F5F9", color: on ? "#fff" : "#475569" })
-  };
-
-  function AdminPanel({ onClose }) {
-    const { useState, useEffect } = React;
-    const [users, setUsers] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [tab, setTab] = useState("pending");
-    const [err, setErr] = useState("");
-    const fb = window.__psAuth();
-
-    async function load() {
-      setLoading(true); setErr("");
-      try {
-        const snap = await fb.db.collection("users").orderBy("createdAt", "desc").get();
-        setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (e) { setErr(e.message || "Laden fehlgeschlagen."); }
-      setLoading(false);
-    }
-    useEffect(() => { load(); }, []);
-
-    async function setStatus(id, status) {
-      try { await fb.db.collection("users").doc(id).update({ status }); await load(); }
-      catch (e) { setErr(e.message); }
-    }
-    async function clearDevice(id) {
-      try { await fb.db.collection("users").doc(id).update({ deviceId: window.firebase.firestore.FieldValue.delete() }); await load(); }
-      catch (e) { setErr(e.message); }
-    }
-    async function removeUser(id, email) {
-      if (!window.confirm("Konto-Datensatz von " + email + " wirklich löschen?\n\n(Hinweis: entfernt die Freigabe. Der Anmelde-Account selbst wird in der Firebase-Konsole unter Authentication endgültig gelöscht.)")) return;
-      try { await fb.db.collection("users").doc(id).delete(); await load(); }
-      catch (e) { setErr(e.message); }
-    }
-
-    const filtered = users.filter(u => {
-      if (tab === "pending") return u.status === "pending";
-      if (tab === "approved") return u.status === "approved";
-      if (tab === "blocked") return u.status === "blocked";
-      return true;
-    });
-
-    const fmt = (ts) => { try { return ts && ts.toDate ? ts.toDate().toLocaleString("de-DE") : "—"; } catch (e) { return "—"; } };
-
-    return React.createElement("div", { style: s.overlay, onClick: e => { if (e.target === e.currentTarget) onClose(); } },
-      React.createElement("div", { style: s.panel },
-        React.createElement("div", { style: s.head },
-          React.createElement("h2", { style: s.h }, "Mitarbeiter-Verwaltung"),
-          React.createElement("button", { style: s.x, onClick: onClose }, "×")
-        ),
-        React.createElement("div", { style: s.tabRow },
-          React.createElement("button", { style: s.tab(tab === "pending"), onClick: () => setTab("pending") }, "Wartet auf Freigabe"),
-          React.createElement("button", { style: s.tab(tab === "approved"), onClick: () => setTab("approved") }, "Freigegeben"),
-          React.createElement("button", { style: s.tab(tab === "blocked"), onClick: () => setTab("blocked") }, "Gesperrt"),
-          React.createElement("button", { style: s.tab(tab === "all"), onClick: () => setTab("all") }, "Alle"),
-          React.createElement("button", { style: { ...s.tab(false), marginLeft: "auto" }, onClick: load }, "↻ Aktualisieren")
-        ),
-        err && React.createElement("div", { style: { background: "#FEF2F2", border: "1px solid #FECACA", color: "#B91C1C", fontSize: "13px", borderRadius: "10px", padding: "10px 12px", marginBottom: "12px" } }, err),
-        loading
-          ? React.createElement("div", { style: s.empty }, "Lade…")
-          : (filtered.length === 0
-              ? React.createElement("div", { style: s.empty }, "Keine Einträge in dieser Kategorie.")
-              : filtered.map(u => React.createElement("div", { key: u.id, style: s.row },
-                  React.createElement("div", null,
-                    React.createElement("div", { style: s.email }, u.email || u.id),
-                    React.createElement("div", { style: { marginTop: "5px" } },
-                      u.status === "approved" && React.createElement("span", { style: s.badge("#DCFCE7", "#15803D") }, "Freigegeben"),
-                      u.status === "pending" && React.createElement("span", { style: s.badge("#FEF9C3", "#A16207") }, "Wartet"),
-                      u.status === "blocked" && React.createElement("span", { style: s.badge("#FEE2E2", "#B91C1C") }, "Gesperrt"),
-                      u.deviceId
-                        ? React.createElement("span", { style: s.badge("#E0F2FE", "#0369A1") }, "Gerät gebunden")
-                        : React.createElement("span", { style: s.badge("#F1F5F9", "#64748B") }, "Kein Gerät")
-                    ),
-                    React.createElement("div", { style: s.meta }, "Erstellt: " + fmt(u.createdAt) + " · Letzter Login: " + fmt(u.lastLogin))
-                  ),
-                  React.createElement("div", { style: s.btns },
-                    u.status !== "approved" && React.createElement("button", { style: s.b("#16A34A"), onClick: () => setStatus(u.id, "approved") }, "Freigeben"),
-                    u.status !== "blocked" && React.createElement("button", { style: s.b("#DC2626"), onClick: () => setStatus(u.id, "blocked") }, "Sperren"),
-                    u.status === "blocked" && React.createElement("button", { style: s.b("#0284C7"), onClick: () => setStatus(u.id, "approved") }, "Entsperren"),
-                    u.deviceId && React.createElement("button", { style: s.b("#7C3AED"), onClick: () => clearDevice(u.id) }, "Gerät lösen"),
-                    React.createElement("button", { style: s.b("#475569"), onClick: () => removeUser(u.id, u.email) }, "Löschen")
-                  )
-                ))
-            )
-      )
-    );
-  }
-
-  window.__PencilAdminPanel = AdminPanel;
-})();
-
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  LOGIN-INTEGRATION – Verbindungsschicht (AppShell + Admin-Overlay + Gate)
-//  Wickelt die echte App() in eine Hülle mit Abmelden-/Admin-Buttons und
-//  schaltet die Einladungs-Anmeldung davor. React ist hier global vorhanden.
-// ═══════════════════════════════════════════════════════════════════════════
-(function () {
-  // Sicherheitsnetz: falls Auth-SDK fehlt, App normal ohne Login starten.
-  var authAvailable = !!(window.firebase && window.firebase.auth);
-
-  // ── AppShell: rendert App() + schwebende Buttons (nur Admin) ──
-  function AppShell(props) {
-    var isAdmin = !!(props && props.__isAdmin);
-    var onLogout = (props && props.__onLogout) || function () {};
-    var openAdmin = (props && props.__openAdmin) || function () {};
-
-    var floatWrap = {
-      position: "fixed", right: "14px", bottom: "14px", zIndex: 99999,
-      display: "flex", flexDirection: "column", gap: "8px", alignItems: "flex-end"
-    };
-    var btn = {
-      border: "none", borderRadius: "999px", padding: "10px 16px",
-      fontSize: "13px", fontWeight: 800, cursor: "pointer",
-      boxShadow: "0 6px 18px rgba(0,0,0,0.22)", fontFamily: "system-ui,-apple-system,Segoe UI,Roboto,sans-serif"
-    };
-    var adminBtn = Object.assign({}, btn, { background: "#00A8E0", color: "#fff" });
-    var logoutBtn = Object.assign({}, btn, { background: "#0A1A3A", color: "#fff" });
-
-    var floating = React.createElement("div", { style: floatWrap },
-      isAdmin && React.createElement("button", { style: adminBtn, onClick: openAdmin, title: "Mitarbeiter verwalten" }, "👥 Mitarbeiter"),
-      React.createElement("button", { style: logoutBtn, onClick: onLogout, title: "Abmelden" }, "⎋ Abmelden")
-    );
-
-    // Die echte App unverändert rendern; Buttons schweben darüber.
-    return React.createElement(React.Fragment, null,
-      React.createElement(App, null),
-      floating
-    );
-  }
-  window.__PencilApp = AppShell;
-
-  // ── Admin-Overlay: außerhalb des Gates montieren, per Flag ein/aus ──
-  (function mountAdminOverlay() {
-    var host = document.getElementById("__ps_admin_host");
-    if (!host) {
-      host = document.createElement("div");
-      host.id = "__ps_admin_host";
-      document.body.appendChild(host);
-    }
-    var adminRoot = ReactDOM.createRoot(host);
-
-    function AdminOverlayWrapper() {
-      var useState = React.useState;
-      var open = useState(false);
-      var isOpen = open[0], setOpen = open[1];
-      // Öffnen-Funktion global bereitstellen (Login-Modul ruft sie auf)
-      window.__psOpenAdmin = function () { setOpen(true); };
-      if (!isOpen) return null;
-      if (!window.__PencilAdminPanel) return null;
-      return React.createElement(window.__PencilAdminPanel, { onClose: function () { setOpen(false); } });
-    }
-    adminRoot.render(React.createElement(AdminOverlayWrapper, null));
-  })();
-
-  // ── Gate montieren: LoginGate statt App direkt ──
-  window.__mountPencilGate = function (rootEl) {
-    var root = ReactDOM.createRoot(rootEl);
-    if (authAvailable && window.__PencilLoginGate) {
-      root.render(React.createElement(window.__PencilLoginGate, null));
-    } else {
-      // Fallback: App ohne Login (sollte nie passieren, wenn Auth-SDK geladen ist)
-      root.render(React.createElement(App, null));
-    }
-  };
-})();
-
-// ===== LOGIN-SYSTEM – Ende =====
-
 // === GitHub Pages Safety Start ===
 // Firebase-Scripts dürfen auf GitHub Pages nicht zu spät geladen sein.
 // Darum starten wir React erst, wenn ReactDOM + Firebase wirklich bereit sind.
 function __startPencilAppWhenReady(attempt = 0) {
   try {
     const rootEl = document.getElementById('root');
-    const firebaseReady = !!(window.firebase && window.firebase.initializeApp && window.firebase.firestore && window.firebase.auth);
+    const firebaseReady = !!(window.firebase && window.firebase.initializeApp && window.firebase.firestore);
     const reactReady = !!(window.React && window.ReactDOM && ReactDOM.createRoot);
     if (!rootEl || !reactReady || !firebaseReady) {
       if (attempt < 120) {
@@ -35903,9 +35317,8 @@ function __startPencilAppWhenReady(attempt = 0) {
       }
       return;
     }
-    // Login-Gate statt App direkt: Anmeldung wird davor geschaltet
-    if (window.__mountPencilGate) { window.__mountPencilGate(rootEl); }
-    else { const root = ReactDOM.createRoot(rootEl); root.render(/*#__PURE__*/React.createElement(App, null)); }
+    const root = ReactDOM.createRoot(rootEl);
+    root.render(/*#__PURE__*/React.createElement(App, null));
   } catch (err) {
     console.error('Pencil Selling Startfehler:', err);
     const rootEl = document.getElementById('root');
@@ -35918,7 +35331,234 @@ function __startPencilAppWhenReady(attempt = 0) {
     }
   }
 }
-__startPencilAppWhenReady();
+// ═══════════════════════════════════════════════════════════════
+// AUTH-GATE (Login / Einladung / Freigabe) — NEU hinzugefügt.
+// Ändert nichts an der bestehenden App. Ersetzt nur den direkten
+// Start-Aufruf unten durch diesen Gate-Check; danach läuft alles
+// exakt wie vorher (LINK_EMPLOYEE/CURRENT_SHOP_ID lesen wie bisher
+// aus localStorage 'ps_link_agent' / 'ps_shop').
+// ═══════════════════════════════════════════════════════════════
+function __psGateRender(html) {
+  var el = document.getElementById('root');
+  if (el) el.innerHTML = html;
+}
+
+function __psGetAuth() {
+  try {
+    if (window.__statsAuth) return window.__statsAuth;
+    var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'stats'; });
+    var app = existing ? existing : window.firebase.initializeApp(STATS_FB_CONFIG, 'stats');
+    window.__statsAuth = window.firebase.auth(app);
+    return window.__statsAuth;
+  } catch (e) {
+    console.error('Auth-Init fehlgeschlagen:', e);
+    return null;
+  }
+}
+
+function __psShowError(msg) {
+  var box = document.getElementById('ps-gate-msg');
+  if (box) {
+    box.textContent = msg;
+    box.classList.remove('hidden');
+  }
+}
+
+function __psRenderLogin(prefillEmail) {
+  __psGateRender(
+    '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-1">Pencil Selling</h1>' +
+        '<p class="text-sm text-slate-500 mb-5">Bitte anmelden</p>' +
+        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+        '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefillEmail || '') + '" ' +
+          'class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+        '<input id="ps-gate-pw" type="password" placeholder="Passwort" ' +
+          'class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+        '<button id="ps-gate-login-btn" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm mb-2">Anmelden</button>' +
+        '<button id="ps-gate-reset-btn" class="w-full text-blue-600 text-xs py-1">Passwort vergessen?</button>' +
+      '</div>' +
+    '</div>'
+  );
+  document.getElementById('ps-gate-login-btn').onclick = function () {
+    var email = document.getElementById('ps-gate-email').value.trim();
+    var pw = document.getElementById('ps-gate-pw').value;
+    if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
+    var auth = __psGetAuth();
+    auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+      return auth.signInWithEmailAndPassword(email, pw);
+    }).catch(function (e) {
+      __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
+    });
+  };
+  document.getElementById('ps-gate-reset-btn').onclick = function () {
+    var email = document.getElementById('ps-gate-email').value.trim();
+    if (!email) { __psShowError('Bitte zuerst E-Mail eingeben.'); return; }
+    __psGetAuth().sendPasswordResetEmail(email).then(function () {
+      __psShowError('E-Mail zum Zurücksetzen wurde verschickt.');
+    }).catch(function (e) {
+      __psShowError('Fehler: ' + (e && e.message || e));
+    });
+  };
+}
+
+function __psRenderRegister(code, invite) {
+  var shopName = (SHOPS[invite.shopId] && SHOPS[invite.shopId].name) || invite.shopId || '–';
+  __psGateRender(
+    '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-1">Willkommen bei Pencil Selling</h1>' +
+        '<p class="text-sm text-slate-500 mb-5">Einmalig registrieren</p>' +
+        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+        '<div class="text-sm text-slate-700 mb-3 space-y-0.5">' +
+          '<div><b>Name:</b> ' + (invite.name || '–') + '</div>' +
+          '<div><b>E-Mail:</b> ' + invite.email + '</div>' +
+          '<div><b>Shop:</b> ' + shopName + '</div>' +
+        '</div>' +
+        '<input id="ps-gate-pw1" type="password" placeholder="Passwort wählen" ' +
+          'class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+        '<input id="ps-gate-pw2" type="password" placeholder="Passwort wiederholen" ' +
+          'class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+        '<button id="ps-gate-register-btn" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>' +
+      '</div>' +
+    '</div>'
+  );
+  document.getElementById('ps-gate-register-btn').onclick = function () {
+    var pw1 = document.getElementById('ps-gate-pw1').value;
+    var pw2 = document.getElementById('ps-gate-pw2').value;
+    if (pw1.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
+    if (pw1 !== pw2) { __psShowError('Passwörter stimmen nicht überein.'); return; }
+    var auth = __psGetAuth();
+    var email = String(invite.email || '').toLowerCase().trim();
+    auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+      return auth.createUserWithEmailAndPassword(email, pw1);
+    }).then(function (cred) {
+      return cred.user.sendEmailVerification().then(function () {
+        var db = getStatsDb();
+        return db.collection('users').doc(cred.user.uid).set({
+          email: email,
+          name: invite.name || '',
+          shopId: invite.shopId || 'aalen',
+          role: invite.role || 'verkaeufer',
+          status: 'pending',
+          createdAt: Date.now()
+        }).then(function () {
+          return db.collection('invites').doc(code).update({
+            status: 'used',
+            usedByUid: cred.user.uid
+          });
+        });
+      });
+    }).catch(function (e) {
+      __psShowError('Fehler: ' + (e && e.message || e));
+    });
+  };
+}
+
+function __psRenderWait(kind) {
+  var title = kind === 'verify' ? 'E-Mail bestätigen' : 'Warte auf Freigabe';
+  var text = kind === 'verify'
+    ? 'Wir haben dir eine E-Mail geschickt. Bitte bestätige deine Adresse, dann geht es automatisch weiter.'
+    : 'Dein Konto ist erstellt. Ein Administrator muss dich noch freischalten.';
+  __psGateRender(
+    '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-2">' + title + '</h1>' +
+        '<p class="text-sm text-slate-500 mb-5">' + text + '</p>' +
+        (kind === 'verify' ? '<button id="ps-gate-resend" class="w-full text-blue-600 text-xs py-2 mb-2">E-Mail erneut senden</button>' : '') +
+        '<button id="ps-gate-logout" class="w-full text-slate-400 text-xs py-1">Abmelden</button>' +
+      '</div>' +
+    '</div>'
+  );
+  if (kind === 'verify') {
+    document.getElementById('ps-gate-resend').onclick = function () {
+      var auth = __psGetAuth();
+      if (auth.currentUser) {
+        auth.currentUser.sendEmailVerification().catch(function () {});
+      }
+    };
+  }
+  document.getElementById('ps-gate-logout').onclick = function () {
+    __psGetAuth().signOut().then(function () { location.reload(); });
+  };
+}
+
+function __psAddFloatingLogout() {
+  if (document.getElementById('ps-floating-logout')) return;
+  var btn = document.createElement('button');
+  btn.id = 'ps-floating-logout';
+  btn.textContent = '🔓 Abmelden';
+  btn.style.cssText = 'position:fixed;bottom:8px;left:8px;z-index:99999;background:rgba(15,23,42,0.75);color:#fff;font-size:11px;padding:5px 10px;border-radius:999px;border:none;';
+  btn.onclick = function () {
+    __psGetAuth().signOut().then(function () { location.reload(); });
+  };
+  document.body.appendChild(btn);
+}
+
+function __psStartApprovedListener(uid, onApproved, onRevoked) {
+  var db = getStatsDb();
+  var started = false;
+  db.collection('users').doc(uid).onSnapshot(function (snap) {
+    var d = snap.data();
+    if (d && d.status === 'approved') {
+      if (!started) { started = true; onApproved(d); }
+    } else if (started) {
+      onRevoked();
+    } else if (d) {
+      __psRenderWait('approval');
+    }
+  });
+}
+
+function __PS_startAuthGate(startAppFn) {
+  var auth = __psGetAuth();
+  if (!auth) { startAppFn(); return; } // Auth nicht verfügbar -> App trotzdem starten (Fallback)
+
+  var params = new URLSearchParams(window.location.search || '');
+  var inviteCode = params.get('invite') || params.get('einladung') || '';
+
+  auth.onAuthStateChanged(function (user) {
+    if (!user) {
+      if (inviteCode) {
+        getStatsDb().collection('invites').doc(inviteCode).get().then(function (doc) {
+          if (doc.exists && doc.data().status === 'open') {
+            __psRenderRegister(inviteCode, doc.data());
+          } else {
+            __psRenderLogin('');
+          }
+        }).catch(function () {
+          __psRenderLogin('');
+        });
+        return;
+      }
+      __psRenderLogin('');
+      return;
+    }
+    user.reload().then(function () {
+      if (!user.emailVerified) {
+        __psRenderWait('verify');
+        var iv = setInterval(function () {
+          user.reload().then(function () {
+            if (user.emailVerified) { clearInterval(iv); location.reload(); }
+          }).catch(function () {});
+        }, 4000);
+        return;
+      }
+      __psStartApprovedListener(user.uid, function (profile) {
+        try {
+          localStorage.setItem('ps_link_agent', profile.name || '');
+          localStorage.setItem('ps_shop', profile.shopId || 'aalen');
+        } catch (e) {}
+        __psAddFloatingLogout();
+        startAppFn();
+      }, function () {
+        auth.signOut().then(function () { location.reload(); });
+      });
+    });
+  });
+}
+
+__PS_startAuthGate(__startPencilAppWhenReady);
 
 // === v24: Bundle-Laufzeit Dropdown/Badge sichtbar machen (Tailwind-Klassen fehlen im Pencil-Selling) ===
 (function () {
