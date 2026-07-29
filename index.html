@@ -35332,14 +35332,16 @@ function __startPencilAppWhenReady(attempt = 0) {
   }
 }
 // ═══════════════════════════════════════════════════════════════
-// AUTH-GATE (Login / Einladung / Freigabe) — NEU hinzugefügt.
+// AUTH-GATE (Login / Selbstregistrierung / Freigabe) — NEU.
 // Ändert nichts an der bestehenden App. Ersetzt nur den direkten
 // Start-Aufruf unten durch diesen Gate-Check; danach läuft alles
 // exakt wie vorher (LINK_EMPLOYEE/CURRENT_SHOP_ID lesen wie bisher
 // aus localStorage 'ps_link_agent' / 'ps_shop').
-// Login/Einladung/Freigabe laufen im EIGENEN Firebase-Projekt
+// Login/Registrierung/Freigabe laufen im EIGENEN Firebase-Projekt
 // "Beta Pencil Selling" (beta-pencil-selling) — komplett getrennt
-// vom Stats-Projekt (pencil-selling-stats-2f86e).
+// vom Stats-Projekt (pencil-selling-stats-2f86e). Keine Einladungen
+// mehr nötig: Mitarbeiter registrieren sich selbst, Freigabe läuft
+// über das Administrator-Dashboard (Feld 'active' in users/{uid}).
 // ═══════════════════════════════════════════════════════════════
 const BETA_FB_CONFIG = {
   apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
@@ -35349,11 +35351,7 @@ const BETA_FB_CONFIG = {
   messagingSenderId: "154760755449",
   appId: "1:154760755449:web:a4a006f738077eb5344a28"
 };
-
-function __psGateRender(html) {
-  var el = document.getElementById('root');
-  if (el) el.innerHTML = html;
-}
+const PS_ADMIN_EMAIL = 'd.dasilva@hetec-gmbh.de';
 
 function __psGetBetaApp() {
   var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'beta'; });
@@ -35377,6 +35375,11 @@ function __psGetAuth() {
   }
 }
 
+function __psGateRender(html) {
+  var el = document.getElementById('root');
+  if (el) el.innerHTML = html;
+}
+
 function __psShowError(msg) {
   var box = document.getElementById('ps-gate-msg');
   if (box) {
@@ -35385,100 +35388,117 @@ function __psShowError(msg) {
   }
 }
 
-function __psRenderLogin(prefillEmail) {
-  __psGateRender(
-    '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
-      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
-        '<h1 class="text-xl font-bold text-slate-800 mb-1">Pencil Selling</h1>' +
-        '<p class="text-sm text-slate-500 mb-5">Bitte anmelden</p>' +
-        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
-        '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefillEmail || '') + '" ' +
-          'class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-        '<input id="ps-gate-pw" type="password" placeholder="Passwort" ' +
-          'class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-        '<button id="ps-gate-login-btn" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm mb-2">Anmelden</button>' +
-        '<button id="ps-gate-reset-btn" class="w-full text-blue-600 text-xs py-1">Passwort vergessen?</button>' +
-      '</div>' +
-    '</div>'
-  );
-  document.getElementById('ps-gate-login-btn').onclick = function () {
-    var email = document.getElementById('ps-gate-email').value.trim();
-    var pw = document.getElementById('ps-gate-pw').value;
-    if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
-    var auth = __psGetAuth();
-    auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
-      return auth.signInWithEmailAndPassword(email, pw);
-    }).catch(function (e) {
-      __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
-    });
-  };
-  document.getElementById('ps-gate-reset-btn').onclick = function () {
-    var email = document.getElementById('ps-gate-email').value.trim();
-    if (!email) { __psShowError('Bitte zuerst E-Mail eingeben.'); return; }
-    __psGetAuth().sendPasswordResetEmail(email).then(function () {
-      __psShowError('E-Mail zum Zurücksetzen wurde verschickt.');
-    }).catch(function (e) {
-      __psShowError('Fehler: ' + (e && e.message || e));
-    });
-  };
+function __psIsAdminEmail(email) {
+  return String(email || '').toLowerCase() === PS_ADMIN_EMAIL;
 }
 
-function __psRenderRegister(code, invite) {
-  var shopName = invite.shop || (SHOPS[invite.shopId] && SHOPS[invite.shopId].name) || invite.shopId || '–';
-  var vollerName = ((invite.vorname || '') + ' ' + (invite.nachname || '')).trim();
+function __psShopOptionsHtml() {
+  var html = '';
+  Object.keys(SHOPS).forEach(function (id) {
+    html += '<option value="' + id + '">' + SHOPS[id].name + '</option>';
+  });
+  return html;
+}
+
+function __psRenderAuth(mode, prefill) {
+  prefill = prefill || {};
+  var isRegister = mode === 'register';
+  function tabBtn(m, label) {
+    var active = m === mode;
+    return '<button data-mode="' + m + '" class="ps-tab flex-1 py-2 text-sm font-semibold rounded-lg ' +
+      (active ? 'bg-blue-600 text-white' : 'text-slate-500') + '">' + label + '</button>';
+  }
+  var formHtml = isRegister ? (
+    '<input id="ps-gate-vorname" type="text" placeholder="Vorname" value="' + (prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-nachname" type="text" placeholder="Nachname" value="' + (prefill.nachname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail (@hetec-gmbh.de)" value="' + (prefill.email || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<select id="ps-gate-shop" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' + __psShopOptionsHtml() + '</select>' +
+    '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>'
+  ) : (
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefill.email || '') + '" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm mb-2">Anmelden</button>' +
+    '<button id="ps-gate-reset-btn" class="w-full text-blue-600 text-xs py-1">Passwort vergessen?</button>'
+  );
+
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
       '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
-        '<h1 class="text-xl font-bold text-slate-800 mb-1">Willkommen bei Pencil Selling</h1>' +
-        '<p class="text-sm text-slate-500 mb-5">Einmalig registrieren</p>' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-4">Pencil Selling</h1>' +
+        '<div class="flex gap-1 bg-slate-100 rounded-lg p-1 mb-4">' + tabBtn('login', 'Anmelden') + tabBtn('register', 'Registrieren') + '</div>' +
         '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
-        '<div class="text-sm text-slate-700 mb-3 space-y-0.5">' +
-          '<div><b>Name:</b> ' + (vollerName || '–') + '</div>' +
-          '<div><b>E-Mail:</b> ' + invite.email + '</div>' +
-          '<div><b>Shop:</b> ' + shopName + '</div>' +
-        '</div>' +
-        '<input id="ps-gate-pw1" type="password" placeholder="Passwort wählen" ' +
-          'class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-        '<input id="ps-gate-pw2" type="password" placeholder="Passwort wiederholen" ' +
-          'class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-        '<button id="ps-gate-register-btn" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>' +
+        formHtml +
       '</div>' +
     '</div>'
   );
-  document.getElementById('ps-gate-register-btn').onclick = function () {
-    var pw1 = document.getElementById('ps-gate-pw1').value;
-    var pw2 = document.getElementById('ps-gate-pw2').value;
-    if (pw1.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
-    if (pw1 !== pw2) { __psShowError('Passwörter stimmen nicht überein.'); return; }
-    var auth = __psGetAuth();
-    var email = String(invite.email || '').toLowerCase().trim();
-    auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
-      return auth.createUserWithEmailAndPassword(email, pw1);
-    }).then(function (cred) {
-      return cred.user.sendEmailVerification().then(function () {
-        var db = __psGetBetaDb();
-        return db.collection('users').doc(cred.user.uid).set({
-          email: email,
-          name: vollerName,
-          vorname: invite.vorname || '',
-          nachname: invite.nachname || '',
-          shopId: invite.shopId || 'aalen',
-          shop: invite.shop || '',
-          shopwechsel: !!invite.shopwechsel,
-          role: invite.role || 'verkaeufer',
-          status: 'pending',
-          createdAt: Date.now()
-        }).then(function () {
-          return db.collection('invites').doc(code).update({
-            status: 'used',
-            usedByUid: cred.user.uid
+
+  Array.prototype.forEach.call(document.querySelectorAll('.ps-tab'), function (btn) {
+    btn.onclick = function () {
+      var vals = {
+        vorname: (document.getElementById('ps-gate-vorname') || {}).value,
+        nachname: (document.getElementById('ps-gate-nachname') || {}).value,
+        email: (document.getElementById('ps-gate-email') || {}).value
+      };
+      __psRenderAuth(btn.getAttribute('data-mode'), vals);
+    };
+  });
+
+  if (isRegister) {
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var vorname = document.getElementById('ps-gate-vorname').value.trim();
+      var nachname = document.getElementById('ps-gate-nachname').value.trim();
+      var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
+      var pw = document.getElementById('ps-gate-pw').value;
+      var shopId = document.getElementById('ps-gate-shop').value;
+      if (!vorname || !nachname || !email || !pw) { __psShowError('Bitte alle Felder ausfüllen.'); return; }
+      if (!/@hetec-gmbh\.de$/.test(email)) { __psShowError('Nur E-Mail-Adressen mit @hetec-gmbh.de erlaubt.'); return; }
+      if (pw.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
+      var auth = __psGetAuth();
+      auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+        return auth.createUserWithEmailAndPassword(email, pw);
+      }).then(function (cred) {
+        return cred.user.sendEmailVerification().then(function () {
+          return __psGetBetaDb().collection('users').doc(cred.user.uid).set({
+            email: email,
+            vorname: vorname,
+            nachname: nachname,
+            name: (vorname + ' ' + nachname).trim(),
+            shopId: shopId,
+            shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
+            role: 'verkaeufer',
+            status: 'pending',
+            active: false,
+            isTestUser: false,
+            createdAt: Date.now()
           });
         });
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
       });
-    }).catch(function (e) {
-      __psShowError('Fehler: ' + (e && e.message || e));
-    });
-  };
+    };
+  } else {
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
+      var pw = document.getElementById('ps-gate-pw').value;
+      if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
+      var auth = __psGetAuth();
+      auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+        return auth.signInWithEmailAndPassword(email, pw);
+      }).catch(function (e) {
+        __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
+      });
+    };
+    document.getElementById('ps-gate-reset-btn').onclick = function () {
+      var email = document.getElementById('ps-gate-email').value.trim();
+      if (!email) { __psShowError('Bitte zuerst E-Mail eingeben.'); return; }
+      __psGetAuth().sendPasswordResetEmail(email).then(function () {
+        __psShowError('E-Mail zum Zurücksetzen wurde verschickt.');
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
+      });
+    };
+  }
 }
 
 function __psRenderWait(kind) {
@@ -35499,9 +35519,7 @@ function __psRenderWait(kind) {
   if (kind === 'verify') {
     document.getElementById('ps-gate-resend').onclick = function () {
       var auth = __psGetAuth();
-      if (auth.currentUser) {
-        auth.currentUser.sendEmailVerification().catch(function () {});
-      }
+      if (auth.currentUser) { auth.currentUser.sendEmailVerification().catch(function () {}); }
     };
   }
   document.getElementById('ps-gate-logout').onclick = function () {
@@ -35521,45 +35539,24 @@ function __psAddFloatingLogout() {
   document.body.appendChild(btn);
 }
 
-function __psStartApprovedListener(uid, onApproved, onRevoked) {
-  var db = __psGetBetaDb();
-  var started = false;
-  db.collection('users').doc(uid).onSnapshot(function (snap) {
-    var d = snap.data();
-    if (d && d.status === 'approved') {
-      if (!started) { started = true; onApproved(d); }
-    } else if (started) {
-      onRevoked();
-    } else if (d) {
-      __psRenderWait('approval');
-    }
-  });
-}
-
 function __PS_startAuthGate(startAppFn) {
   var auth = __psGetAuth();
-  if (!auth) { startAppFn(); return; } // Auth nicht verfügbar -> App trotzdem starten (Fallback)
+  if (!auth) { startAppFn(); return; }
+  var appStarted = false;
 
-  var params = new URLSearchParams(window.location.search || '');
-  var inviteCode = params.get('invite') || params.get('einladung') || '';
+  function startOnce(profile) {
+    if (appStarted) return;
+    appStarted = true;
+    try {
+      localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
+      localStorage.setItem('ps_shop', (profile && profile.shopId) || 'aalen');
+    } catch (e) {}
+    __psAddFloatingLogout();
+    startAppFn();
+  }
 
   auth.onAuthStateChanged(function (user) {
-    if (!user) {
-      if (inviteCode) {
-        __psGetBetaDb().collection('invites').doc(inviteCode).get().then(function (doc) {
-          if (doc.exists && doc.data().status === 'invited') {
-            __psRenderRegister(inviteCode, doc.data());
-          } else {
-            __psRenderLogin('');
-          }
-        }).catch(function () {
-          __psRenderLogin('');
-        });
-        return;
-      }
-      __psRenderLogin('');
-      return;
-    }
+    if (!user) { __psRenderAuth('login'); return; }
     user.reload().then(function () {
       if (!user.emailVerified) {
         __psRenderWait('verify');
@@ -35570,16 +35567,16 @@ function __PS_startAuthGate(startAppFn) {
         }, 4000);
         return;
       }
-      __psStartApprovedListener(user.uid, function (profile) {
-        try {
-          localStorage.setItem('ps_link_agent', profile.name || '');
-          localStorage.setItem('ps_shop', profile.shopId || 'aalen');
-          localStorage.setItem('ps_shopwechsel', profile.shopwechsel ? '1' : '0');
-        } catch (e) {}
-        __psAddFloatingLogout();
-        startAppFn();
-      }, function () {
-        auth.signOut().then(function () { location.reload(); });
+      var isBootstrapAdmin = __psIsAdminEmail(user.email);
+      __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
+        var d = snap.data();
+        if ((d && d.active === true) || isBootstrapAdmin) {
+          startOnce(d || { name: user.email, shopId: 'aalen' });
+        } else if (appStarted) {
+          auth.signOut().then(function () { location.reload(); });
+        } else {
+          __psRenderWait('approval');
+        }
       });
     });
   });
