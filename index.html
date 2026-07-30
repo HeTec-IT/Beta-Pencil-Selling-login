@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- ══════════════════════════════════════════════════════════════════════
-         KEIN HTML-CACHE  (v53.3)
+         KEIN HTML-CACHE  (v53.4)
          Android/Chrome hielt diese Datei sonst tagelang im Cache: nach einem
          Update lief auf dem Tablet weiter die ALTE Version, Fehlerkorrekturen
          kamen nie an. Die CDN-Bibliotheken bleiben davon unberührt.
@@ -135,12 +135,12 @@
 
         var manifestLink = document.createElement('link');
         manifestLink.rel = 'manifest';
-        manifestLink.href = 'manifest.webmanifest?v=53.3';
+        manifestLink.href = 'manifest.webmanifest?v=53.4';
         document.head.appendChild(manifestLink);
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js?v=53.3').catch(function (e) {
+                navigator.serviceWorker.register('sw.js?v=53.4').catch(function (e) {
                     console.warn('SW-Registrierung fehlgeschlagen:', e);
                 });
             });
@@ -179,7 +179,7 @@
     </script>
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         VERSION + CACHE-BUSTING  (v53.3)
+         VERSION + CACHE-BUSTING  (v53.4)
          ──────────────────────────────────────────────────────────────────────
          Android/Chrome hält HTML von GitHub Pages sehr hartnäckig im Cache.
          Ohne diesen Block sieht der Mitarbeiter nach einem Update weiterhin
@@ -187,7 +187,7 @@
          Bei neuer Version: APP_VERSION unten hochsetzen. Fertig.
          ══════════════════════════════════════════════════════════════════════ -->
     <script>
-    window.APP_VERSION = '53.3';
+    window.APP_VERSION = '53.4';
     (function(){
         try {
             var KEY = 'pencil_app_version';
@@ -25940,6 +25940,37 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     };
   };
 
+  // v77: TEST-HOOK für die Konsole - testet NUR die Power-Automate-Verbindung,
+  // ohne kompletten Verkaufsdurchlauf (Unterschrift etc.) zu brauchen.
+  // Nutzung in der Browser-Konsole (F12):  __testArchivUpload()
+  // oder mit Angebot statt Abschluss:      __testArchivUpload('angebot')
+  try {
+    window.__testArchivUpload = async function (typ) {
+      const _typ = typ === 'angebot' ? 'angebot' : 'abschluss';
+      const _blob = new Blob(['%PDF-1.4\n% Testdatei - Archiv-Verbindungstest\n'], {
+        type: 'application/pdf'
+      });
+      try {
+        const _res = await uploadPdfToPowerAutomate({
+          blob: _blob,
+          type: _typ,
+          dsl: 'nein',
+          agent: 'TestAgent',
+          dateISO: new Date().toISOString()
+        });
+        if (_res && _res.skipped) {
+          console.warn('[TEST-UPLOAD] Übersprungen - PA_UPLOAD_URL ist noch der Platzhalter.');
+        } else {
+          console.log('[TEST-UPLOAD] Gesendet (Typ: ' + _typ + '). In SharePoint & Flow-Verlauf prüfen.');
+        }
+        return _res;
+      } catch (e) {
+        console.error('[TEST-UPLOAD] Fehler:', e);
+        throw e;
+      }
+    };
+  } catch (e) {}
+
   // Hintergrund-Upload: erstellt Print-Look PDF und lädt es hoch. UI bleibt normal (Print-Dialog kann trotzdem kommen).
   const backgroundAutoUpload = async ({
     type,
@@ -28444,7 +28475,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       marginLeft: '-8px',
       marginRight: '2px'
     }
-  }, "v53.3"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
+  }, "v53.4"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowMyStats(true),
     className: "p-2 text-slate-400 hover:text-emerald-600 rounded-full hover:bg-emerald-50 transition-colors",
     title: "Meine Statistik – Qualität & Vorgänge ansehen"
