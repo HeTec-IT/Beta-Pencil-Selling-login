@@ -35823,33 +35823,38 @@ function __PS_startAuthGate(startAppFn) {
     if (appStarted) return;
     appStarted = true;
     var _home = (profile && profile.shopId) || 'aalen';
+    var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
+    var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
     var _priorShop = null;
     try { _priorShop = localStorage.getItem('ps_shop'); } catch (e) {}
+    // BUGFIX: 'ps_shop' NICHT mehr blind auf den Heimatshop zurücksetzen –
+    // das hat einen manuell (per erlaubtem Shop-Wechsel) gewählten Shop bei
+    // jedem Login wieder überschrieben. Der zuletzt gewählte Shop bleibt
+    // jetzt erhalten, SOFERN er noch erlaubt ist (Heimatshop oder vom Admin
+    // freigegebener Zusatzstandort in extraShopIds). Wurde die Freigabe
+    // zwischenzeitlich entzogen, fällt es automatisch zurück auf den
+    // Heimatshop.
+    var _effectiveShop = (_priorShop && _allowed.indexOf(_priorShop) !== -1) ? _priorShop : _home;
     try {
       localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
-      localStorage.setItem('ps_shop', _home);
-      // NEU: Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen.
-      // Ohne Freigabe bleibt ein Mitarbeiter auf seinem Heimatshop (shopId)
+      localStorage.setItem('ps_shop', _effectiveShop);
+      // Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen. Ohne
+      // Freigabe bleibt ein Mitarbeiter auf seinem Heimatshop (shopId)
       // stationär. Erst ein Eintrag in extraShopIds (vom Administrator im
       // Dashboard gesetzt, "Weitere Standorte verwalten") gibt zusätzliche
       // Standorte frei – exakt dieselbe bereits im Admin-Dashboard vorhandene
-      // Logik, hier nur konsumiert. Wirkt ab dem nächsten Laden/Login, wie
-      // schon bisher bei 'ps_shop'.
-      var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
-      var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
+      // Logik, hier nur konsumiert.
       localStorage.setItem('ps_allowed_shops', JSON.stringify(_allowed));
       localStorage.setItem('ps_shopwechsel', _extra.length > 0 ? '1' : '0');
     } catch (e) {}
-    // BUGFIX: CURRENT_SHOP_ID (und PS_ALLOWED_SHOP_IDS) sind oben im Skript
-    // als const berechnet, BEVOR das Firestore-Profil geladen ist – also aus
-    // dem 'ps_shop', der VOR diesem Aufruf in localStorage stand. Beim aller-
-    // ersten Start eines Mitarbeiters (oder nach einer Shop-Änderung durch
-    // den Admin) ist dort noch nichts/der alte Wert hinterlegt, wodurch die
-    // App fälschlich mit dem Aalen-Fallback rendert, obwohl der Heimatshop
-    // oben gerade korrekt gespeichert wurde – nur zu spät für diesen Lauf.
-    // Genau wie beim manuellen "Shop wechseln" hilft hier nur ein (einmaliger,
-    // selbstbeendender) Reload, damit CURRENT_SHOP_ID neu und korrekt berechnet wird.
-    if (_priorShop !== _home) {
+    // CURRENT_SHOP_ID (und PS_ALLOWED_SHOP_IDS) sind oben im Skript als
+    // const berechnet, BEVOR das Firestore-Profil geladen ist – also aus
+    // dem 'ps_shop', der VOR diesem Aufruf in localStorage stand. Nur wenn
+    // der jetzt ermittelte, tatsächlich gültige Shop davon abweicht (z.B.
+    // beim allerersten Start, oder wenn eine Freigabe entzogen wurde), hilft
+    // ein einmaliger, selbstbeendender Reload – genau wie beim manuellen
+    // "Shop wechseln" – damit CURRENT_SHOP_ID neu und korrekt berechnet wird.
+    if (_effectiveShop !== CURRENT_SHOP_ID) {
       try {
         var u = new URL(window.location.href);
         u.searchParams.delete('shop');
