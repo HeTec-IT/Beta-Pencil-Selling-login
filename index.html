@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- ══════════════════════════════════════════════════════════════════════
-         KEIN HTML-CACHE  (v53.4)
+         KEIN HTML-CACHE  (v53.5)
          Android/Chrome hielt diese Datei sonst tagelang im Cache: nach einem
          Update lief auf dem Tablet weiter die ALTE Version, Fehlerkorrekturen
          kamen nie an. Die CDN-Bibliotheken bleiben davon unberührt.
@@ -135,12 +135,12 @@
 
         var manifestLink = document.createElement('link');
         manifestLink.rel = 'manifest';
-        manifestLink.href = 'manifest.webmanifest?v=53.4';
+        manifestLink.href = 'manifest.webmanifest?v=53.5';
         document.head.appendChild(manifestLink);
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js?v=53.4').catch(function (e) {
+                navigator.serviceWorker.register('sw.js?v=53.5').catch(function (e) {
                     console.warn('SW-Registrierung fehlgeschlagen:', e);
                 });
             });
@@ -179,7 +179,7 @@
     </script>
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         VERSION + CACHE-BUSTING  (v53.4)
+         VERSION + CACHE-BUSTING  (v53.5)
          ──────────────────────────────────────────────────────────────────────
          Android/Chrome hält HTML von GitHub Pages sehr hartnäckig im Cache.
          Ohne diesen Block sieht der Mitarbeiter nach einem Update weiterhin
@@ -187,7 +187,7 @@
          Bei neuer Version: APP_VERSION unten hochsetzen. Fertig.
          ══════════════════════════════════════════════════════════════════════ -->
     <script>
-    window.APP_VERSION = '53.4';
+    window.APP_VERSION = '53.5';
     (function(){
         try {
             var KEY = 'pencil_app_version';
@@ -18453,6 +18453,18 @@ function App() {
   })();
   const PA_UPLOAD_URL = 'https://defaultbffb3b9ff04a4553a4bd451341d982.c3.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/30/workflows/6e4980d3dcb74b89bec5b9d88d14e5eb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=kMXS4jANnAUzpeQ_UtVZvcKuE4OPaBIwj00elhHAZkg';
   const PA_SHARED_KEY = 'hetec-ps-9f3k';
+  // ══════════════════════════════════════════════════════════════════════
+  // NEU (v53.5): ZWEITER, GETRENNTER Archiv-Flow – laeuft automatisch im
+  // Hintergrund beim Kundenversand ("An Kunden senden"), zusaetzlich zum
+  // bisherigen manuellen Archivierungsvorgang (der bleibt vorerst als
+  // Notfalloesung erhalten). Dieser Flow speichert NICHTS direkt in
+  // SharePoint – er schickt die interne PDF nur per E-Mail an ARCHIV_EMAIL;
+  // der bestehende E-Mail-Flow sortiert von dort aus weiter.
+  // Solange ARCHIVE_FLOW_URL der Platzhalter ist: Versand wird still
+  // uebersprungen, der Kundenversand laeuft normal weiter.
+  // ══════════════════════════════════════════════════════════════════════
+  const ARCHIVE_FLOW_URL = 'PASTE_NEW_POWER_AUTOMATE_URL_HERE';
+  const ARCHIVE_FLOW_KEY = 'hetec-ps-9f3k';
   // Archiv-Postfach: hierhin schickt der Mitarbeiter das abgeschlossene Angebot (Power Automate sortiert es weiter)
   const ARCHIV_EMAIL = 'pencil-selling@hetec-gmbh.de';
   // SharePoint-Ordner zum direkten Abrufen der archivierten PDFs
@@ -21345,6 +21357,8 @@ function App() {
               });
               window.__lastPdfBlob = blob;
               window.__lastPdfFile = pdfFile;
+              // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
+              sendArchivCopyToNewFlow(blob, 'abschluss');
               // v57b: IMMER "Jetzt teilen"-Dialog. Direkt-Teilen scheitert auf
               // iPad/Android nach langer Erzeugung (Geste abgelaufen). Der Tap im
               // Dialog liefert die frische Geste → natives Menü öffnet garantiert.
@@ -25940,6 +25954,77 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     };
   };
 
+  // ══════════════════════════════════════════════════════════════════════
+  // NEU (v53.5): Interne Archiv-PDF im Hintergrund an den NEUEN Flow senden.
+  // Wird beim Kundenversand ("An Kunden senden") automatisch ausgeloest,
+  // zusaetzlich zum normalen Kundenversand - blockiert diesen NIE (kein
+  // await durch den Aufrufer noetig, alle Fehler werden hier abgefangen).
+  // Nutzt die BESTEHENDE Dateinamen-/Betrefflogik (buildArchivDateiname/
+  // buildArchivBetreff) - keinen neuen vereinfachten Namen.
+  // Solange ARCHIVE_FLOW_URL der Platzhalter ist: leise ueberspringen.
+  // ══════════════════════════════════════════════════════════════════════
+  const sendArchivCopyToNewFlow = (blob, forcedType) => {
+    (async () => {
+      try {
+        if (!blob || !ARCHIVE_FLOW_URL || ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE')) return;
+        const _typ = forcedType === 'abschluss' || forcedType === 'angebot' ? forcedType : customerSignature ? 'abschluss' : 'angebot';
+        let _ruf = '';
+        try {
+          _ruf = sharedMsisdnRef.current || (textData?.Rufnummer || '').replace(/[^0-9+]/g, '').trim();
+        } catch (e) {}
+        let _kunde = '';
+        try {
+          _kunde = cleanKundeName(sharedKundeRef.current || textData?.Kundenname || '');
+        } catch (e) {}
+        let _agent = '';
+        try {
+          _agent = getAgentDisplayNameForUpload();
+          if (_agent === '–') _agent = '';
+        } catch (e) {}
+        let _dsl = 'nein';
+        try {
+          _dsl = getDslFlagForUpload();
+        } catch (e) {}
+        let _shop = '';
+        try {
+          _shop = String(window.__PS_SHOP_ORT || '').trim();
+        } catch (e) {}
+        const _datum = new Date().toISOString().slice(0, 10);
+        const archiveSubject = buildArchivBetreff(_typ, _datum, _ruf, _agent);
+        const archiveFileName = _typ === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde);
+        const pdfBase64 = await blobToBase64(blob);
+        const _nowISO = new Date().toISOString();
+        const payload = {
+          key: ARCHIVE_FLOW_KEY,
+          type: _typ,
+          // 'abschluss' | 'angebot'
+          dsl: _dsl,
+          // 'ja' | 'nein'
+          agent: _agent,
+          shop: _shop,
+          date: _nowISO.slice(0, 10),
+          ts: _nowISO,
+          archiveFileName,
+          archiveSubject,
+          pdfBase64
+        };
+        // no-cors + text/plain: gleiche Begruendung wie bei uploadPdfToPowerAutomate
+        // (Power-Automate-HTTP-Trigger liefert keine CORS-Header; Antwort bleibt
+        // "opaque" - bewusst in Kauf genommen, der Kundenversand darf nie haengen).
+        await fetch(ARCHIVE_FLOW_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify(payload)
+        });
+      } catch (e) {
+        console.warn('[ARCHIV-FLOW-NEU] Hintergrund-Upload fehlgeschlagen:', e);
+      }
+    })();
+  };
+
   // v77: TEST-HOOK für die Konsole - testet NUR die Power-Automate-Verbindung,
   // ohne kompletten Verkaufsdurchlauf (Unterschrift etc.) zu brauchen.
   // Nutzung in der Browser-Konsole (F12):  __testArchivUpload()
@@ -27216,6 +27301,8 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         } catch (e) {}
       }
       logQuoteToStatistics();
+      // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
+      sendArchivCopyToNewFlow(blob);
     }
 
     // DIREKT teilen – die Geste (Klick bzw. „Weiter" der Namensabfrage) ist frisch
@@ -27310,6 +27397,8 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
 
       // ── Statistik sofort loggen (zählt unabhängig vom Teilen-Weg als "Angebot") ──
       logQuoteToStatistics();
+      // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
+      sendArchivCopyToNewFlow(blob);
 
       // v53b: DIREKT teilen – der Blob lag schon bereit, die Geste
       // (Klick bzw. „Weiter" der Namensabfrage) ist noch frisch.
@@ -28475,7 +28564,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       marginLeft: '-8px',
       marginRight: '2px'
     }
-  }, "v53.4"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
+  }, "v53.5"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowMyStats(true),
     className: "p-2 text-slate-400 hover:text-emerald-600 rounded-full hover:bg-emerald-50 transition-colors",
     title: "Meine Statistik – Qualität & Vorgänge ansehen"
