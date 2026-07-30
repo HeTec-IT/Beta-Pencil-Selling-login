@@ -4633,6 +4633,21 @@ const CURRENT_SHOP = SHOPS[CURRENT_SHOP_ID] || SHOPS.aalen;
 try {
   window.__PS_SHOP = CURRENT_SHOP_ID;
 } catch (e) {}
+
+// ═══════════════════════════════════════════════════════════════
+// NEU: erlaubte Shops für diesen Mitarbeiter (Heimatshop + vom
+// Administrator freigegebene weitere Standorte, Feld extraShopIds in
+// users/{uid} – wird beim Login in 'ps_allowed_shops' gespeichert).
+// Diego (Admin) sieht wie bisher immer alle Shops.
+// ═══════════════════════════════════════════════════════════════
+const PS_ALLOWED_SHOP_IDS = (() => {
+  if (LINK_EMPLOYEE === 'Diego da Silva') return Object.keys(SHOPS);
+  try {
+    const raw = JSON.parse(localStorage.getItem('ps_allowed_shops') || 'null');
+    if (Array.isArray(raw) && raw.length) return raw.filter(id => SHOPS[id]);
+  } catch (_) {}
+  return [CURRENT_SHOP_ID];
+})();
 // v53: Shop-KENNUNG (id), nicht der Ort.
 // Grund: In einer Stadt können mehrere Shops liegen – z.B.
 // "o2 Crailsheim" und "Telekom Crailsheim". Der Ort wäre bei beiden
@@ -28740,7 +28755,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       cursor: 'pointer',
       maxWidth: '190px'
     }
-  }, Object.keys(SHOPS).map(id => /*#__PURE__*/React.createElement("option", {
+  }, Object.keys(SHOPS).filter(id => PS_ALLOWED_SHOP_IDS.includes(id)).map(id => /*#__PURE__*/React.createElement("option", {
     key: id,
     value: id
   }, SHOPS[id].name)))), view === 'offer' && /*#__PURE__*/React.createElement("div", {
@@ -35731,10 +35746,12 @@ function __psRenderAuth(mode, prefill) {
 }
 
 function __psRenderWait(kind) {
-  var title = kind === 'verify' ? 'E-Mail bestätigen' : 'Warte auf Freigabe';
+  var title = kind === 'verify' ? 'E-Mail bestätigen' : (kind === 'blocked' ? 'Kein Zugang' : 'Warte auf Freigabe');
   var text = kind === 'verify'
     ? 'Wir haben dir eine E-Mail geschickt. Bitte bestätige deine Adresse, dann geht es automatisch weiter.'
-    : 'Dein Konto ist erstellt. Ein Administrator muss dich noch freischalten.';
+    : kind === 'blocked'
+      ? 'Dein Konto wurde von einem Administrator gesperrt oder abgelehnt. Bitte wende dich an deinen Administrator.'
+      : 'Dein Konto ist erstellt. Ein Administrator muss dich noch freischalten.';
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
       '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">' +
@@ -35808,6 +35825,18 @@ function __PS_startAuthGate(startAppFn) {
     try {
       localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
       localStorage.setItem('ps_shop', (profile && profile.shopId) || 'aalen');
+      // NEU: Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen.
+      // Ohne Freigabe bleibt ein Mitarbeiter auf seinem Heimatshop (shopId)
+      // stationär. Erst ein Eintrag in extraShopIds (vom Administrator im
+      // Dashboard gesetzt, "Weitere Standorte verwalten") gibt zusätzliche
+      // Standorte frei – exakt dieselbe bereits im Admin-Dashboard vorhandene
+      // Logik, hier nur konsumiert. Wirkt ab dem nächsten Laden/Login, wie
+      // schon bisher bei 'ps_shop'.
+      var _home = (profile && profile.shopId) || 'aalen';
+      var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
+      var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
+      localStorage.setItem('ps_allowed_shops', JSON.stringify(_allowed));
+      localStorage.setItem('ps_shopwechsel', _extra.length > 0 ? '1' : '0');
     } catch (e) {}
     __psAddFloatingLogout();
     startAppFn();
@@ -35894,6 +35923,7 @@ function __PS_startAuthGate(startAppFn) {
       // email_verified=false-Eigenschaft und blockiert die Nutzer-Abfrage.
       user.getIdToken(true).then(function () {
         var isBootstrapAdmin = __psIsAdminEmail(user.email);
+        var autoActivateAttempted = false;
         __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
           var d = snap.data();
           if (!d) {
@@ -35904,6 +35934,23 @@ function __PS_startAuthGate(startAppFn) {
             startOnce(d);
           } else if (appStarted) {
             auth.signOut().then(function () { location.reload(); });
+          } else if (d.status === 'pending' && !autoActivateAttempted) {
+            // NEU: keine manuelle Admin-Freigabe mehr nötig – die
+            // E-Mail-Bestätigung (Domain @hetec-gmbh.de + verifiziert)
+            // reicht aus. Direkt freischalten; der onSnapshot-Listener
+            // reagiert danach automatisch auf das aktualisierte Profil.
+            // Der Administrator kann das Konto im Dashboard weiterhin
+            // jederzeit ablehnen/sperren.
+            autoActivateAttempted = true;
+            __psGetBetaDb().collection('users').doc(user.uid)
+              .update({ active: true, status: 'approved' })
+              .catch(function (e) {
+                autoActivateAttempted = false;
+                console.error('Automatische Freischaltung fehlgeschlagen:', e);
+                __psRenderWait('approval');
+              });
+          } else if (d.status === 'rejected' || d.status === 'gesperrt') {
+            __psRenderWait('blocked');
           } else {
             __psRenderWait('approval');
           }
