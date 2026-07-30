@@ -35822,9 +35822,12 @@ function __PS_startAuthGate(startAppFn) {
   function startOnce(profile) {
     if (appStarted) return;
     appStarted = true;
+    var _home = (profile && profile.shopId) || 'aalen';
+    var _priorShop = null;
+    try { _priorShop = localStorage.getItem('ps_shop'); } catch (e) {}
     try {
       localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
-      localStorage.setItem('ps_shop', (profile && profile.shopId) || 'aalen');
+      localStorage.setItem('ps_shop', _home);
       // NEU: Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen.
       // Ohne Freigabe bleibt ein Mitarbeiter auf seinem Heimatshop (shopId)
       // stationär. Erst ein Eintrag in extraShopIds (vom Administrator im
@@ -35832,12 +35835,30 @@ function __PS_startAuthGate(startAppFn) {
       // Standorte frei – exakt dieselbe bereits im Admin-Dashboard vorhandene
       // Logik, hier nur konsumiert. Wirkt ab dem nächsten Laden/Login, wie
       // schon bisher bei 'ps_shop'.
-      var _home = (profile && profile.shopId) || 'aalen';
       var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
       var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
       localStorage.setItem('ps_allowed_shops', JSON.stringify(_allowed));
       localStorage.setItem('ps_shopwechsel', _extra.length > 0 ? '1' : '0');
     } catch (e) {}
+    // BUGFIX: CURRENT_SHOP_ID (und PS_ALLOWED_SHOP_IDS) sind oben im Skript
+    // als const berechnet, BEVOR das Firestore-Profil geladen ist – also aus
+    // dem 'ps_shop', der VOR diesem Aufruf in localStorage stand. Beim aller-
+    // ersten Start eines Mitarbeiters (oder nach einer Shop-Änderung durch
+    // den Admin) ist dort noch nichts/der alte Wert hinterlegt, wodurch die
+    // App fälschlich mit dem Aalen-Fallback rendert, obwohl der Heimatshop
+    // oben gerade korrekt gespeichert wurde – nur zu spät für diesen Lauf.
+    // Genau wie beim manuellen "Shop wechseln" hilft hier nur ein (einmaliger,
+    // selbstbeendender) Reload, damit CURRENT_SHOP_ID neu und korrekt berechnet wird.
+    if (_priorShop !== _home) {
+      try {
+        var u = new URL(window.location.href);
+        u.searchParams.delete('shop');
+        u.searchParams.delete('filiale');
+        window.__psIntentionalReload = true;
+        window.location.replace(u.toString());
+        return;
+      } catch (e) {}
+    }
     __psAddFloatingLogout();
     startAppFn();
   }
