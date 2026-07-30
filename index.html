@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- ══════════════════════════════════════════════════════════════════════
-         KEIN HTML-CACHE  (v53.5)
+         KEIN HTML-CACHE  (v53.6)
          Android/Chrome hielt diese Datei sonst tagelang im Cache: nach einem
          Update lief auf dem Tablet weiter die ALTE Version, Fehlerkorrekturen
          kamen nie an. Die CDN-Bibliotheken bleiben davon unberührt.
@@ -135,12 +135,12 @@
 
         var manifestLink = document.createElement('link');
         manifestLink.rel = 'manifest';
-        manifestLink.href = 'manifest.webmanifest?v=53.5';
+        manifestLink.href = 'manifest.webmanifest?v=53.6';
         document.head.appendChild(manifestLink);
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js?v=53.5').catch(function (e) {
+                navigator.serviceWorker.register('sw.js?v=53.6').catch(function (e) {
                     console.warn('SW-Registrierung fehlgeschlagen:', e);
                 });
             });
@@ -179,7 +179,7 @@
     </script>
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         VERSION + CACHE-BUSTING  (v53.5)
+         VERSION + CACHE-BUSTING  (v53.6)
          ──────────────────────────────────────────────────────────────────────
          Android/Chrome hält HTML von GitHub Pages sehr hartnäckig im Cache.
          Ohne diesen Block sieht der Mitarbeiter nach einem Update weiterhin
@@ -187,7 +187,7 @@
          Bei neuer Version: APP_VERSION unten hochsetzen. Fertig.
          ══════════════════════════════════════════════════════════════════════ -->
     <script>
-    window.APP_VERSION = '53.5';
+    window.APP_VERSION = '53.6';
     (function(){
         try {
             var KEY = 'pencil_app_version';
@@ -25990,8 +25990,20 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
           _shop = String(window.__PS_SHOP_ORT || '').trim();
         } catch (e) {}
         const _datum = new Date().toISOString().slice(0, 10);
-        const archiveSubject = buildArchivBetreff(_typ, _datum, _ruf, _agent);
-        const archiveFileName = _typ === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde);
+        // ⚠️ Feste Felder fuer den neuen Flow – MUESSEN im Payload landen.
+        // Eigene Fallbacks, damit sie selbst bei einem unerwarteten Fehler
+        // in buildArchivBetreff()/buildArchivDateiname() nie fehlen.
+        let archiveSubject = '';
+        try {
+          archiveSubject = String(buildArchivBetreff(_typ, _datum, _ruf, _agent) || '');
+        } catch (e) {}
+        if (!archiveSubject) archiveSubject = `PENCIL|${_typ}|${_datum}|${_agent || 'unbekannt'}`;
+        let archiveFileName = '';
+        try {
+          archiveFileName = String((_typ === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde)) || '');
+        } catch (e) {}
+        if (!archiveFileName) archiveFileName = `PENCIL_${_typ === 'abschluss' ? 'Abschluss' : 'Angebot'}_${_datum}.pdf`;
+        if (!/\.pdf$/i.test(archiveFileName)) archiveFileName += '.pdf'; // .pdf MUSS immer dran sein
         const pdfBase64 = await blobToBase64(blob);
         const _nowISO = new Date().toISOString();
         const payload = {
@@ -26004,9 +26016,9 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
           shop: _shop,
           date: _nowISO.slice(0, 10),
           ts: _nowISO,
-          archiveFileName,
-          archiveSubject,
-          pdfBase64
+          archiveFileName: archiveFileName,
+          archiveSubject: archiveSubject,
+          pdfBase64: pdfBase64
         };
         // no-cors + text/plain: gleiche Begruendung wie bei uploadPdfToPowerAutomate
         // (Power-Automate-HTTP-Trigger liefert keine CORS-Header; Antwort bleibt
@@ -28564,7 +28576,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       marginLeft: '-8px',
       marginRight: '2px'
     }
-  }, "v53.5"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
+  }, "v53.6"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowMyStats(true),
     className: "p-2 text-slate-400 hover:text-emerald-600 rounded-full hover:bg-emerald-50 transition-colors",
     title: "Meine Statistik – Qualität & Vorgänge ansehen"
