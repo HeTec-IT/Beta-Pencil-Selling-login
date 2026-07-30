@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- ══════════════════════════════════════════════════════════════════════
-         KEIN HTML-CACHE  (v53.6)
+         KEIN HTML-CACHE  (v53.7)
          Android/Chrome hielt diese Datei sonst tagelang im Cache: nach einem
          Update lief auf dem Tablet weiter die ALTE Version, Fehlerkorrekturen
          kamen nie an. Die CDN-Bibliotheken bleiben davon unberührt.
@@ -135,12 +135,12 @@
 
         var manifestLink = document.createElement('link');
         manifestLink.rel = 'manifest';
-        manifestLink.href = 'manifest.webmanifest?v=53.6';
+        manifestLink.href = 'manifest.webmanifest?v=53.7';
         document.head.appendChild(manifestLink);
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js?v=53.6').catch(function (e) {
+                navigator.serviceWorker.register('sw.js?v=53.7').catch(function (e) {
                     console.warn('SW-Registrierung fehlgeschlagen:', e);
                 });
             });
@@ -179,7 +179,7 @@
     </script>
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         VERSION + CACHE-BUSTING  (v53.6)
+         VERSION + CACHE-BUSTING  (v53.7)
          ──────────────────────────────────────────────────────────────────────
          Android/Chrome hält HTML von GitHub Pages sehr hartnäckig im Cache.
          Ohne diesen Block sieht der Mitarbeiter nach einem Update weiterhin
@@ -187,7 +187,7 @@
          Bei neuer Version: APP_VERSION unten hochsetzen. Fertig.
          ══════════════════════════════════════════════════════════════════════ -->
     <script>
-    window.APP_VERSION = '53.6';
+    window.APP_VERSION = '53.7';
     (function(){
         try {
             var KEY = 'pencil_app_version';
@@ -18451,20 +18451,18 @@ function App() {
       });
     });
   })();
-  const PA_UPLOAD_URL = 'https://defaultbffb3b9ff04a4553a4bd451341d982.c3.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/30/workflows/6e4980d3dcb74b89bec5b9d88d14e5eb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=kMXS4jANnAUzpeQ_UtVZvcKuE4OPaBIwj00elhHAZkg';
-  const PA_SHARED_KEY = 'hetec-ps-9f3k';
   // ══════════════════════════════════════════════════════════════════════
-  // NEU (v53.5): ZWEITER, GETRENNTER Archiv-Flow – laeuft automatisch im
-  // Hintergrund beim Kundenversand ("An Kunden senden"), zusaetzlich zum
-  // bisherigen manuellen Archivierungsvorgang (der bleibt vorerst als
-  // Notfalloesung erhalten). Dieser Flow speichert NICHTS direkt in
-  // SharePoint – er schickt die interne PDF nur per E-Mail an ARCHIV_EMAIL;
-  // der bestehende E-Mail-Flow sortiert von dort aus weiter.
-  // Solange ARCHIVE_FLOW_URL der Platzhalter ist: Versand wird still
-  // uebersprungen, der Kundenversand laeuft normal weiter.
+  // v53.7: EIN zentraler Archiv-Flow fuer automatische UND manuelle
+  // Archivierung. Er sendet die interne PDF per HTTP an Power Automate;
+  // Power Automate verschickt sie mit Betreff + Dateiname an das Archivpostfach.
+  // Der alte Direkt-SharePoint-Payload bleibt nur als Kompatibilitaets-Alias,
+  // sendet aber ebenfalls ueber dieselbe zentrale Funktion und kann daher
+  // keine unvollstaendigen/doppelten Payloads mehr erzeugen.
   // ══════════════════════════════════════════════════════════════════════
-  const ARCHIVE_FLOW_URL = 'PASTE_NEW_POWER_AUTOMATE_URL_HERE';
+  const ARCHIVE_FLOW_URL = 'https://defaultbffb3b9ff04a4553a4bd451341d982.c3.environment.api.powerplatform.com:443/powerautomate/automations/direct/cu/30/workflows/6e4980d3dcb74b89bec5b9d88d14e5eb/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=kMXS4jANnAUzpeQ_UtVZvcKuE4OPaBIwj00elhHAZkg';
   const ARCHIVE_FLOW_KEY = 'hetec-ps-9f3k';
+  const PA_UPLOAD_URL = ARCHIVE_FLOW_URL; // Legacy-Alias; kein separater Uploadweg mehr
+  const PA_SHARED_KEY = ARCHIVE_FLOW_KEY;
   // Archiv-Postfach: hierhin schickt der Mitarbeiter das abgeschlossene Angebot (Power Automate sortiert es weiter)
   const ARCHIV_EMAIL = 'pencil-selling@hetec-gmbh.de';
   // SharePoint-Ordner zum direkten Abrufen der archivierten PDFs
@@ -21357,7 +21355,7 @@ function App() {
               });
               window.__lastPdfBlob = blob;
               window.__lastPdfFile = pdfFile;
-              // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
+              // v53.7: interne Archiv-PDF automatisch ueber den zentralen Flow senden
               sendArchivCopyToNewFlow(blob, 'abschluss');
               // v57b: IMMER "Jetzt teilen"-Dialog. Direkt-Teilen scheitert auf
               // iPad/Android nach langer Erzeugung (Geste abgelaufen). Der Tap im
@@ -25900,48 +25898,93 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     reader.readAsDataURL(blob);
   });
 
-  // Sendet PDF + Metadaten an Power Automate (Flow speichert in OneDrive)
-  const uploadPdfToPowerAutomate = async ({
+  // ══════════════════════════════════════════════════════════════════════
+  // v53.7: ZENTRALE Archiv-Funktion.
+  // Automatischer Kundenversand und manueller Notfall-Archivbutton verwenden
+  // exakt denselben Payload mit Betreff, Dateiname und PDF-Inhalt.
+  // ══════════════════════════════════════════════════════════════════════
+  const sendArchivePayloadToFlow = async ({
     blob,
     type,
     dsl,
     agent,
     dateISO,
-    triggerToast
+    archiveFileName,
+    archiveSubject
   }) => {
-    if (!PA_UPLOAD_URL || PA_UPLOAD_URL.includes('PASTE_POWER_AUTOMATE_FLOW_URL_HERE')) {
-      // Noch nicht konfiguriert -> leise überspringen (Druck/Teilen soll trotzdem funktionieren)
+    if (!ARCHIVE_FLOW_URL || ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE') || ARCHIVE_FLOW_URL.includes('PASTE_POWER_AUTOMATE_FLOW_URL_HERE')) {
       return {
         ok: false,
         skipped: true
       };
     }
-    const pdfBase64 = await blobToBase64(blob);
-    // v76: Shop-KENNUNG mitschicken (z.B. 'aalen', 'schwaebisch-hall').
-    // Der Flow baut daraus den Ziel-Ordner - gleiche Logik wie das Mail-System.
+    if (!blob) throw new Error('Archiv-PDF fehlt.');
+
+    const _nowISO = typeof dateISO === 'string' && dateISO ? dateISO : new Date().toISOString();
+    const _datum = /^\d{4}-\d{2}-\d{2}/.test(_nowISO) ? _nowISO.slice(0, 10) : new Date().toISOString().slice(0, 10);
+    const _typ = type === 'abschluss' ? 'abschluss' : 'angebot';
+    const _dsl = dsl === 'ja' ? 'ja' : 'nein';
+    const _agent = String(agent || '').trim();
+
     let _shop = '';
     try {
       _shop = String(window.__PS_SHOP_ORT || '').trim();
     } catch (e) {}
+    let _ruf = '';
+    try {
+      _ruf = sharedMsisdnRef.current || (textData?.Rufnummer || '').replace(/[^0-9+]/g, '').trim();
+    } catch (e) {}
+    let _kunde = '';
+    try {
+      _kunde = cleanKundeName(sharedKundeRef.current || textData?.Kundenname || '');
+    } catch (e) {}
+
+    let _subject = String(archiveSubject || '').trim();
+    if (!_subject) {
+      try {
+        _subject = String(buildArchivBetreff(_typ, _datum, _ruf, _agent) || '');
+      } catch (e) {}
+    }
+    if (!_subject) _subject = `PENCIL|${_typ}|${_datum}|${(_agent.split(/\s+/)[0] || 'unbekannt')}`;
+
+    let _fileName = String(archiveFileName || '').trim();
+    if (!_fileName) {
+      try {
+        _fileName = String(_typ === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde) || '');
+      } catch (e) {}
+    }
+    if (!_fileName) _fileName = `PENCIL_${_typ === 'abschluss' ? 'Abschluss' : 'Angebot'}_${_datum}.pdf`;
+    if (!/\.pdf$/i.test(_fileName)) _fileName += '.pdf';
+
+    const pdfBase64 = await blobToBase64(blob);
+    if (!pdfBase64) throw new Error('Archiv-PDF konnte nicht in Base64 umgewandelt werden.');
+
     const payload = {
-      type,
-      // 'abschluss' | 'angebot'
-      dsl,
-      // 'ja' | 'nein'
-      agent,
+      key: ARCHIVE_FLOW_KEY,
+      type: _typ,
+      dsl: _dsl,
+      agent: _agent,
       shop: _shop,
-      // Shop-ID fuer die Ordner-Sortierung im Flow
-      date: dateISO.slice(0, 10),
-      ts: dateISO,
-      key: PA_SHARED_KEY || '',
-      pdfBase64
+      date: _datum,
+      ts: _nowISO,
+      archiveFileName: _fileName,
+      archiveSubject: _subject,
+      pdfBase64: pdfBase64
     };
-    // v76: mode:'no-cors' + text/plain, weil der Power-Automate-HTTP-Trigger
-    // von Haus aus KEINE CORS-Header liefert. So bleibt es ein "simple request"
-    // (kein Preflight-OPTIONS) und laeuft trotzdem durch. Kehrseite: die Antwort
-    // ist "opaque" - Erfolg kann von hier aus nicht mehr geprueft werden. Bewusst
-    // in Kauf genommen: der Verkauf darf nie an diesem Schritt haengen bleiben.
-    await fetch(PA_UPLOAD_URL, {
+
+    // Nur Metadaten protokollieren, niemals den vollstaendigen Base64-Inhalt.
+    try {
+      console.log('[ARCHIV-FLOW] Payload bereit:', {
+        archiveFileName: _fileName,
+        archiveSubject: _subject,
+        pdfBase64Vorhanden: !!pdfBase64,
+        pdfBase64Laenge: pdfBase64.length,
+        type: _typ,
+        shop: _shop
+      });
+    } catch (e) {}
+
+    await fetch(ARCHIVE_FLOW_URL, {
       method: 'POST',
       mode: 'no-cors',
       headers: {
@@ -25950,23 +25993,40 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       body: JSON.stringify(payload)
     });
     return {
-      ok: true
+      ok: true,
+      archiveFileName: _fileName,
+      archiveSubject: _subject
     };
   };
 
-  // ══════════════════════════════════════════════════════════════════════
-  // NEU (v53.5): Interne Archiv-PDF im Hintergrund an den NEUEN Flow senden.
-  // Wird beim Kundenversand ("An Kunden senden") automatisch ausgeloest,
-  // zusaetzlich zum normalen Kundenversand - blockiert diesen NIE (kein
-  // await durch den Aufrufer noetig, alle Fehler werden hier abgefangen).
-  // Nutzt die BESTEHENDE Dateinamen-/Betrefflogik (buildArchivDateiname/
-  // buildArchivBetreff) - keinen neuen vereinfachten Namen.
-  // Solange ARCHIVE_FLOW_URL der Platzhalter ist: leise ueberspringen.
-  // ══════════════════════════════════════════════════════════════════════
+  // Legacy-Adapter: Alte interne Aufrufstellen landen ebenfalls im zentralen
+  // Archiv-Flow und senden niemals mehr den frueheren unvollstaendigen Payload.
+  const uploadPdfToPowerAutomate = async ({
+    blob,
+    type,
+    dsl,
+    agent,
+    dateISO,
+    archiveFileName,
+    archiveSubject
+  }) => sendArchivePayloadToFlow({
+    blob,
+    type,
+    dsl,
+    agent,
+    dateISO,
+    archiveFileName,
+    archiveSubject
+  });
+
+  // Automatische Archivkopie beim ersten Kundenversand.
+  // Fire-and-forget: Der Kundenversand wird nie blockiert. Bei lokalem Fehler
+  // wird archiveSentRef wieder freigegeben, damit der Notfallbutton erneut senden kann.
   const sendArchivCopyToNewFlow = (blob, forcedType) => {
+    if (!blob || !ARCHIVE_FLOW_URL || ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE')) return;
+    archiveSentRef.current = true;
     (async () => {
       try {
-        if (!blob || !ARCHIVE_FLOW_URL || ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE')) return;
         const _typ = forcedType === 'abschluss' || forcedType === 'angebot' ? forcedType : customerSignature ? 'abschluss' : 'angebot';
         let _ruf = '';
         try {
@@ -25985,86 +26045,49 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         try {
           _dsl = getDslFlagForUpload();
         } catch (e) {}
-        let _shop = '';
-        try {
-          _shop = String(window.__PS_SHOP_ORT || '').trim();
-        } catch (e) {}
-        const _datum = new Date().toISOString().slice(0, 10);
-        // ⚠️ Feste Felder fuer den neuen Flow – MUESSEN im Payload landen.
-        // Eigene Fallbacks, damit sie selbst bei einem unerwarteten Fehler
-        // in buildArchivBetreff()/buildArchivDateiname() nie fehlen.
-        let archiveSubject = '';
-        try {
-          archiveSubject = String(buildArchivBetreff(_typ, _datum, _ruf, _agent) || '');
-        } catch (e) {}
-        if (!archiveSubject) archiveSubject = `PENCIL|${_typ}|${_datum}|${_agent || 'unbekannt'}`;
-        let archiveFileName = '';
-        try {
-          archiveFileName = String((_typ === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde)) || '');
-        } catch (e) {}
-        if (!archiveFileName) archiveFileName = `PENCIL_${_typ === 'abschluss' ? 'Abschluss' : 'Angebot'}_${_datum}.pdf`;
-        if (!/\.pdf$/i.test(archiveFileName)) archiveFileName += '.pdf'; // .pdf MUSS immer dran sein
-        const pdfBase64 = await blobToBase64(blob);
         const _nowISO = new Date().toISOString();
-        const payload = {
-          key: ARCHIVE_FLOW_KEY,
+        const _datum = _nowISO.slice(0, 10);
+        const _subject = buildArchivBetreff(_typ, _datum, _ruf, _agent);
+        const _fileName = _typ === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde);
+
+        await sendArchivePayloadToFlow({
+          blob,
           type: _typ,
-          // 'abschluss' | 'angebot'
           dsl: _dsl,
-          // 'ja' | 'nein'
           agent: _agent,
-          shop: _shop,
-          date: _nowISO.slice(0, 10),
-          ts: _nowISO,
-          archiveFileName: archiveFileName,
-          archiveSubject: archiveSubject,
-          pdfBase64: pdfBase64
-        };
-        // no-cors + text/plain: gleiche Begruendung wie bei uploadPdfToPowerAutomate
-        // (Power-Automate-HTTP-Trigger liefert keine CORS-Header; Antwort bleibt
-        // "opaque" - bewusst in Kauf genommen, der Kundenversand darf nie haengen).
-        await fetch(ARCHIVE_FLOW_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: {
-            'Content-Type': 'text/plain'
-          },
-          body: JSON.stringify(payload)
+          dateISO: _nowISO,
+          archiveFileName: _fileName,
+          archiveSubject: _subject
         });
       } catch (e) {
-        console.warn('[ARCHIV-FLOW-NEU] Hintergrund-Upload fehlgeschlagen:', e);
+        archiveSentRef.current = false;
+        console.warn('[ARCHIV-FLOW] Automatischer Hintergrund-Upload fehlgeschlagen:', e);
       }
     })();
   };
 
-  // v77: TEST-HOOK für die Konsole - testet NUR die Power-Automate-Verbindung,
-  // ohne kompletten Verkaufsdurchlauf (Unterschrift etc.) zu brauchen.
-  // Nutzung in der Browser-Konsole (F12):  __testArchivUpload()
-  // oder mit Angebot statt Abschluss:      __testArchivUpload('angebot')
+  // v53.7: TEST-HOOK fuer die zentrale Archiv-Verbindung.
+  // Nutzung: __testArchivUpload() oder __testArchivUpload('angebot')
   try {
     window.__testArchivUpload = async function (typ) {
       const _typ = typ === 'angebot' ? 'angebot' : 'abschluss';
+      const _datum = new Date().toISOString().slice(0, 10);
       const _blob = new Blob(['%PDF-1.4\n% Testdatei - Archiv-Verbindungstest\n'], {
         type: 'application/pdf'
       });
-      try {
-        const _res = await uploadPdfToPowerAutomate({
-          blob: _blob,
-          type: _typ,
-          dsl: 'nein',
-          agent: 'TestAgent',
-          dateISO: new Date().toISOString()
-        });
-        if (_res && _res.skipped) {
-          console.warn('[TEST-UPLOAD] Übersprungen - PA_UPLOAD_URL ist noch der Platzhalter.');
-        } else {
-          console.log('[TEST-UPLOAD] Gesendet (Typ: ' + _typ + '). In SharePoint & Flow-Verlauf prüfen.');
-        }
-        return _res;
-      } catch (e) {
-        console.error('[TEST-UPLOAD] Fehler:', e);
-        throw e;
-      }
+      const _subject = buildArchivBetreff(_typ, _datum, '0000000000', 'TestAgent');
+      const _fileName = buildArchivDateiname(_typ, _datum, _typ === 'abschluss' ? '0000000000' : 'Testkunde');
+      const _res = await sendArchivePayloadToFlow({
+        blob: _blob,
+        type: _typ,
+        dsl: 'nein',
+        agent: 'TestAgent',
+        dateISO: new Date().toISOString(),
+        archiveFileName: _fileName,
+        archiveSubject: _subject
+      });
+      console.log('[TEST-ARCHIV-FLOW] Ergebnis:', _res);
+      return _res;
     };
   } catch (e) {}
 
@@ -26507,11 +26530,10 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       }
     } catch (e) {}
 
-    // v76: EIN Ziel fuer ALLE Archiv-Wege. Ist PA_UPLOAD_URL konfiguriert,
-    // laeuft der Versand lautlos ueber Power Automate - die komplette manuelle
-    // Teilen-Kette darunter wird uebersprungen. Bleibt PA_UPLOAD_URL der
-    // Platzhalter, aendert sich am bisherigen (Mail-)Verhalten nichts.
-    if (PA_UPLOAD_URL && !PA_UPLOAD_URL.includes('PASTE_POWER_AUTOMATE_FLOW_URL_HERE')) {
+    // v53.7: Manueller Archiv-/Notfallbutton verwendet denselben zentralen
+    // Flow wie die automatische Archivierung. Dateiname und Betreff werden
+    // exakt aus der bestehenden internen Archivlogik uebernommen.
+    if (ARCHIVE_FLOW_URL && !ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE')) {
       const _felder = String(betreff || '').split('|');
       const _typUpload = _felder[1] === 'abschluss' ? 'abschluss' : 'angebot';
       const _agentUpload = _felder[3] || '';
@@ -26520,20 +26542,25 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         _dslUpload = getDslFlagForUpload();
       } catch (e) {}
       try {
-        await uploadPdfToPowerAutomate({
+        await sendArchivePayloadToFlow({
           blob,
           type: _typUpload,
           dsl: _dslUpload,
           agent: _agentUpload,
-          dateISO: new Date().toISOString()
+          dateISO: new Date().toISOString(),
+          archiveFileName: dateiname,
+          archiveSubject: betreff
         });
+        archiveSentRef.current = true;
         try {
           triggerToast('✅ Archiviert.');
         } catch (e) {}
       } catch (e) {
-        console.warn('[ARCHIV-FLOW] Upload fehlgeschlagen:', e);
+        archiveSentRef.current = false;
+        console.warn('[ARCHIV-FLOW] Manueller Upload fehlgeschlagen:', e);
+        throw e;
       }
-      return; // fertig - kein Teilen-Fenster noetig
+      return; // zentraler Flow uebernimmt E-Mail + Anhang
     }
 
     const saveBlob = b => {
@@ -27313,7 +27340,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         } catch (e) {}
       }
       logQuoteToStatistics();
-      // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
+      // v53.7: interne Archiv-PDF automatisch ueber den zentralen Flow senden
       sendArchivCopyToNewFlow(blob);
     }
 
@@ -27409,7 +27436,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
 
       // ── Statistik sofort loggen (zählt unabhängig vom Teilen-Weg als "Angebot") ──
       logQuoteToStatistics();
-      // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
+      // v53.7: interne Archiv-PDF automatisch ueber den zentralen Flow senden
       sendArchivCopyToNewFlow(blob);
 
       // v53b: DIREKT teilen – der Blob lag schon bereit, die Geste
@@ -28576,7 +28603,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       marginLeft: '-8px',
       marginRight: '2px'
     }
-  }, "v53.6"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
+  }, "v53.7"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowMyStats(true),
     className: "p-2 text-slate-400 hover:text-emerald-600 rounded-full hover:bg-emerald-50 transition-colors",
     title: "Meine Statistik – Qualität & Vorgänge ansehen"
