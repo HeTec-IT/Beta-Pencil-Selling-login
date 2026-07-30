@@ -4319,7 +4319,18 @@ try {
 // ═══════════════════════════════════════════════════════════════
 const LINK_SHOPWECHSEL = (() => {
   try {
-    if (localStorage.getItem('ps_shopwechsel_authorized') === '1') return true;
+    const params = new URLSearchParams(window.location.search || '');
+    const roh = params.get('shopwechsel') || params.get('sw') || '';
+    if (roh !== '') {
+      const an = roh === '1' || roh.toLowerCase() === 'true' || roh.toLowerCase() === 'ja';
+      try {
+        localStorage.setItem('ps_shopwechsel', an ? '1' : '0');
+      } catch (_) {}
+      return an;
+    }
+    try {
+      if (localStorage.getItem('ps_shopwechsel') === '1') return true;
+    } catch (_) {}
   } catch (e) {}
   return false;
 })();
@@ -25907,14 +25918,19 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       key: PA_SHARED_KEY || undefined,
       pdfBase64
     };
-    const res = await fetch(PA_UPLOAD_URL, {
+    // v75: mode:'no-cors' + text/plain, weil der Power-Automate-HTTP-Trigger
+    // von Haus aus KEINE CORS-Header liefert. So bleibt es ein "simple request"
+    // (keine Preflight-OPTIONS) und läuft trotzdem durch. Kehrseite: die Antwort
+    // ist "opaque" - Erfolg kann von hier aus nicht mehr geprüft werden. Bewusst
+    // in Kauf genommen, der Verkauf darf nie an diesem Schritt hängen bleiben.
+    await fetch(PA_UPLOAD_URL, {
       method: 'POST',
+      mode: 'no-cors',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'text/plain'
       },
       body: JSON.stringify(payload)
     });
-    if (!res.ok) throw new Error('Upload failed: ' + res.status);
     return {
       ok: true
     };
@@ -35321,17 +35337,16 @@ function __startPencilAppWhenReady(attempt = 0) {
   }
 }
 // ═══════════════════════════════════════════════════════════════
-// AUTH-GATE (Microsoft-365-Anmeldung + Einladungslink + Freigabe).
-// Aendert nichts an der bestehenden App. Ersetzt nur den direkten
-// Start-Aufruf unten durch diesen Gate-Check; danach laeuft alles
+// AUTH-GATE (Login / Selbstregistrierung / Freigabe) — NEU.
+// Ändert nichts an der bestehenden App. Ersetzt nur den direkten
+// Start-Aufruf unten durch diesen Gate-Check; danach läuft alles
 // exakt wie vorher (LINK_EMPLOYEE/CURRENT_SHOP_ID lesen wie bisher
 // aus localStorage 'ps_link_agent' / 'ps_shop').
-// Anmeldung laeuft im EIGENEN Firebase-Projekt "Beta Pencil Selling"
-// (beta-pencil-selling) - komplett getrennt vom Stats-Projekt
-// (pencil-selling-stats-2f86e). Keine Selbstregistrierung mehr:
-// Mitarbeiter werden per persoenlichem Einladungslink aufgenommen
-// (siehe Administrator-Dashboard) und melden sich danach nur noch
-// mit ihrem Microsoft-365-Firmenkonto an.
+// Login/Registrierung/Freigabe laufen im EIGENEN Firebase-Projekt
+// "Beta Pencil Selling" (beta-pencil-selling) — komplett getrennt
+// vom Stats-Projekt (pencil-selling-stats-2f86e). Keine Einladungen
+// mehr nötig: Mitarbeiter registrieren sich selbst, Freigabe läuft
+// über das Administrator-Dashboard (Feld 'active' in users/{uid}).
 // ═══════════════════════════════════════════════════════════════
 const BETA_FB_CONFIG = {
   apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
@@ -35342,18 +35357,6 @@ const BETA_FB_CONFIG = {
   appId: "1:154760755449:web:a4a006f738077eb5344a28"
 };
 const PS_ADMIN_EMAIL = 'd.dasilva@hetec-gmbh.de';
-
-// Microsoft Entra Tenant-ID der HeTec GmbH (siehe Einrichtungsanleitung).
-// Client-ID/-Secret stehen NICHT hier, sondern nur in der Firebase Console.
-const MICROSOFT_TENANT_ID = "HIER_TENANT_ID_EINTRAGEN";
-
-// Einladungscode aus der URL (?invite=CODE), falls vorhanden.
-const PS_INVITE_CODE = (() => {
-  try {
-    const params = new URLSearchParams(window.location.search || '');
-    return (params.get('invite') || '').trim();
-  } catch (e) { return ''; }
-})();
 
 function __psGetBetaApp() {
   var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'beta'; });
@@ -35404,93 +35407,145 @@ function __psShopOptionsHtml() {
   return html;
 }
 
-// Uebersetzt Firebase/Microsoft-Fehlercodes in verstaendliche Meldungen,
-// statt technische Firebase-Fehler ungefiltert anzuzeigen.
-function __psFriendlyAuthError(e) {
-  var code = (e && e.code) || '';
-  if (code === 'invite/mismatch') return 'Diese Einladung wurde fuer ein anderes Microsoft-Konto erstellt.';
-  if (code === 'invite/invalid' || code === 'invite/used' || code === 'invite/expired' || code === 'invite/revoked') {
-    return 'Dieser Einladungslink ist ungueltig oder nicht mehr aktiv.';
+function __psRenderAuth(mode, prefill) {
+  prefill = prefill || {};
+  var isRegister = mode === 'register';
+  function tabBtn(m, label) {
+    var active = m === mode;
+    return '<button data-mode="' + m + '" class="ps-tab flex-1 py-2 text-sm font-semibold rounded-lg ' +
+      (active ? 'bg-blue-600 text-white' : 'text-slate-500') + '">' + label + '</button>';
   }
-  if (code === 'ps/no-access') return 'Fuer dieses Microsoft-Konto besteht kein aktiver Pencil-Selling-Zugang. Bitte wenden Sie sich an Ihren Administrator.';
-  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return 'Anmeldung abgebrochen.';
-  if (code === 'auth/account-exists-with-different-credential') return 'Fuer dieses Microsoft-Konto existiert bereits ein anderes Anmeldeverfahren. Bitte Administrator kontaktieren.';
-  if (code === 'auth/unauthorized-domain') return 'Diese Domain ist in Firebase Authentication nicht als autorisiert hinterlegt.';
-  if (code === 'auth/operation-not-allowed') return 'Microsoft-Anmeldung ist im Firebase-Projekt noch nicht aktiviert.';
-  if (code === 'auth/network-request-failed') return 'Netzwerkfehler. Bitte Internetverbindung pruefen und erneut versuchen.';
-  return 'Die Zugangsberechtigung konnte nicht geprueft werden. Bitte erneut versuchen.';
-}
+  var formHtml = isRegister ? (
+    '<select id="ps-gate-anrede" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' +
+      '<option value="">Anrede wählen…</option>' +
+      '<option value="Herr"' + (prefill.anrede === 'Herr' ? ' selected' : '') + '>Herr</option>' +
+      '<option value="Frau"' + (prefill.anrede === 'Frau' ? ' selected' : '') + '>Frau</option>' +
+      '<option value="Divers"' + (prefill.anrede === 'Divers' ? ' selected' : '') + '>Divers</option>' +
+    '</select>' +
+    '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" value="' + (prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-nachname" type="text" placeholder="Nachname" value="' + (prefill.nachname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail (@hetec-gmbh.de)" value="' + (prefill.email || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<select id="ps-gate-shop" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' + __psShopOptionsHtml() + '</select>' +
+    '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>'
+  ) : (
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefill.email || '') + '" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<label class="flex items-center gap-2 mb-4 text-sm text-slate-600 cursor-pointer select-none">' +
+      '<input id="ps-gate-remember" type="checkbox" checked class="w-4 h-4" /> Zugangsdaten dauerhaft merken' +
+    '</label>' +
+    '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm mb-2">Anmelden</button>' +
+    '<button id="ps-gate-reset-btn" class="w-full text-blue-600 text-xs py-1">Passwort vergessen?</button>'
+  );
 
-function __psRenderAuth() {
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
-      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">' +
-        '<h1 class="text-xl font-bold text-slate-800 mb-1">Pencil Selling</h1>' +
-        '<p class="text-sm text-slate-500 mb-5">Bitte mit dem Microsoft-365-Firmenkonto (@hetec-gmbh.de) anmelden.</p>' +
-        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-4 text-left"></div>' +
-        '<button id="ps-gate-ms-btn" class="w-full flex items-center justify-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 font-semibold py-2.5 rounded-lg text-sm">' +
-          '<svg width="18" height="18" viewBox="0 0 21 21"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>' +
-          'Mit Microsoft anmelden' +
-        '</button>' +
+      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-4">Pencil Selling</h1>' +
+        '<div class="flex gap-1 bg-slate-100 rounded-lg p-1 mb-4">' + tabBtn('login', 'Anmelden') + tabBtn('register', 'Registrieren') + '</div>' +
+        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+        formHtml +
       '</div>' +
     '</div>'
   );
 
-  if (window.__psPendingGateError) {
-    __psShowError(window.__psPendingGateError);
-    window.__psPendingGateError = null;
-  }
+  Array.prototype.forEach.call(document.querySelectorAll('.ps-tab'), function (btn) {
+    btn.onclick = function () {
+      var vals = {
+        anrede: (document.getElementById('ps-gate-anrede') || {}).value,
+        vorname: (document.getElementById('ps-gate-vorname') || {}).value,
+        nachname: (document.getElementById('ps-gate-nachname') || {}).value,
+        email: (document.getElementById('ps-gate-email') || {}).value
+      };
+      __psRenderAuth(btn.getAttribute('data-mode'), vals);
+    };
+  });
 
-  document.getElementById('ps-gate-ms-btn').onclick = function () {
-    var btn = document.getElementById('ps-gate-ms-btn');
-    __psShowErrorHide();
-    if (btn) { btn.disabled = true; btn.textContent = 'Oeffne Microsoft-Anmeldung...'; }
-    var auth = __psGetAuth();
-    auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
-      var provider = new window.firebase.auth.OAuthProvider('microsoft.com');
-      provider.setCustomParameters({ tenant: MICROSOFT_TENANT_ID });
-      return auth.signInWithPopup(provider).catch(function (popupErr) {
-        if (popupErr && popupErr.code === 'auth/popup-blocked') {
-          return auth.signInWithRedirect(provider);
-        }
-        throw popupErr;
+  if (isRegister) {
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var anrede = document.getElementById('ps-gate-anrede').value;
+      var vorname = document.getElementById('ps-gate-vorname').value.trim();
+      var nachname = document.getElementById('ps-gate-nachname').value.trim();
+      var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
+      var pw = document.getElementById('ps-gate-pw').value;
+      var shopId = document.getElementById('ps-gate-shop').value;
+      if (!anrede || !nachname || !email || !pw) { __psShowError('Bitte Anrede, Nachname, E-Mail und Passwort ausfüllen.'); return; }
+      if (!/@hetec-gmbh\.de$/.test(email)) { __psShowError('Nur E-Mail-Adressen mit @hetec-gmbh.de erlaubt.'); return; }
+      if (pw.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
+      var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
+      var auth = __psGetAuth();
+      auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+        return auth.createUserWithEmailAndPassword(email, pw);
+      }).then(function (cred) {
+        return cred.user.sendEmailVerification().then(function () {
+          return __psGetBetaDb().collection('users').doc(cred.user.uid).set({
+            email: email,
+            anrede: anrede,
+            vorname: vorname,
+            nachname: nachname,
+            name: displayName,
+            shopId: shopId,
+            shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
+            role: 'verkaeufer',
+            status: 'pending',
+            active: false,
+            isTestUser: false,
+            createdAt: Date.now()
+          });
+        });
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
       });
-    }).catch(function (e) {
-      console.error('Microsoft-Anmeldung fehlgeschlagen:', e);
-      __psShowError(__psFriendlyAuthError(e));
-      if (btn) { btn.disabled = false; btn.textContent = 'Mit Microsoft anmelden'; }
-    });
-  };
-}
-
-function __psShowErrorHide() {
-  var box = document.getElementById('ps-gate-msg');
-  if (box) { box.classList.add('hidden'); box.textContent = ''; }
+    };
+  } else {
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
+      var pw = document.getElementById('ps-gate-pw').value;
+      var remember = document.getElementById('ps-gate-remember').checked;
+      if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
+      var auth = __psGetAuth();
+      var persistence = remember ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION;
+      auth.setPersistence(persistence).then(function () {
+        return auth.signInWithEmailAndPassword(email, pw);
+      }).catch(function (e) {
+        __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
+      });
+    };
+    document.getElementById('ps-gate-reset-btn').onclick = function () {
+      var email = document.getElementById('ps-gate-email').value.trim();
+      if (!email) { __psShowError('Bitte zuerst E-Mail eingeben.'); return; }
+      __psGetAuth().sendPasswordResetEmail(email).then(function () {
+        __psShowError('E-Mail zum Zurücksetzen wurde verschickt.');
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
+      });
+    };
+  }
 }
 
 function __psRenderWait(kind) {
-  var copy = {
-    approval: ['Warte auf Freigabe', 'Ihre Anmeldung wurde erfolgreich uebermittelt. Ihr Zugang wartet auf Freigabe durch den Administrator.'],
-    gesperrt: ['Zugang gesperrt', 'Ihr Pencil-Selling-Zugang wurde gesperrt. Bitte wenden Sie sich an Ihren Administrator.'],
-    rejected: ['Zugang abgelehnt', 'Ihre Anmeldung wurde abgelehnt. Bitte wenden Sie sich an Ihren Administrator.'],
-    entfernt: ['Zugang entfernt', 'Ihr Pencil-Selling-Zugang wurde entfernt. Fuer eine erneute Aufnahme wenden Sie sich bitte an Ihren Administrator (neuer Einladungslink).'],
-    'no-access': ['Kein Zugang', 'Fuer dieses Microsoft-Konto besteht kein aktiver Pencil-Selling-Zugang. Bitte wenden Sie sich an Ihren Administrator.']
-  };
-  var c = copy[kind] || copy.approval;
+  var title = kind === 'verify' ? 'E-Mail bestätigen' : 'Warte auf Freigabe';
+  var text = kind === 'verify'
+    ? 'Wir haben dir eine E-Mail geschickt. Bitte bestätige deine Adresse, dann geht es automatisch weiter.'
+    : 'Dein Konto ist erstellt. Ein Administrator muss dich noch freischalten.';
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
       '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">' +
-        '<h1 class="text-xl font-bold text-slate-800 mb-2">' + c[0] + '</h1>' +
-        '<p class="text-sm text-slate-500 mb-5">' + c[1] + '</p>' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-2">' + title + '</h1>' +
+        '<p class="text-sm text-slate-500 mb-5">' + text + '</p>' +
+        (kind === 'verify' ? '<button id="ps-gate-resend" class="w-full text-blue-600 text-xs py-2 mb-2">E-Mail erneut senden</button>' : '') +
         '<button id="ps-gate-logout" class="w-full text-slate-400 text-xs py-1">Abmelden</button>' +
       '</div>' +
     '</div>'
   );
+  if (kind === 'verify') {
+    document.getElementById('ps-gate-resend').onclick = function () {
+      var auth = __psGetAuth();
+      if (auth.currentUser) { auth.currentUser.sendEmailVerification().catch(function () {}); }
+    };
+  }
   document.getElementById('ps-gate-logout').onclick = function () {
-    __psGetAuth().signOut().then(function () {
-      try { sessionStorage.removeItem('hetec_admin'); } catch (e) {}
-      location.reload();
-    });
+    __psGetAuth().signOut().then(function () { location.reload(); });
   };
 }
 
@@ -35540,58 +35595,12 @@ function __PS_startAuthGate(startAppFn) {
   if (!auth) { startAppFn(); return; }
   var appStarted = false;
 
-  function computeAllowedShopIds(profile) {
-    var home = (profile && profile.shopId) || 'aalen';
-    var extra = Array.isArray(profile && profile.extraShopIds) ? profile.extraShopIds : [];
-    var set = {};
-    set[home] = true;
-    extra.forEach(function (id) { set[id] = true; });
-    return set;
-  }
-
-  // Standortberechtigung (Punkt 17): URL-Parameter (?shop=...,
-  // ?shopwechsel=1) duerfen die Freigabe niemals ersetzen. Massgeblich ist
-  // ausschliesslich shopId/extraShopIds aus dem Firestore-Profil. Weicht der
-  // aktuell gespeicherte Shop bzw. das Wechsel-Flag davon ab, wird lokal
-  // korrigiert und die Seite MIT bereinigter URL neu geladen, bevor die
-  // eigentliche App (die CURRENT_SHOP_ID nur einmal beim Start liest)
-  // ueberhaupt startet. Admin ist von dieser Pruefung ausgenommen.
-  function enforceShopPermission(profile, isBootstrapAdmin) {
-    if (isBootstrapAdmin) return true;
-    var allowed = computeAllowedShopIds(profile);
-    var home = (profile && profile.shopId) || 'aalen';
-    var currentShop = null;
-    try { currentShop = localStorage.getItem('ps_shop'); } catch (e) {}
-    var extraOk = Array.isArray(profile && profile.extraShopIds) && profile.extraShopIds.length > 0;
-    var authFlag = null;
-    try { authFlag = localStorage.getItem('ps_shopwechsel_authorized'); } catch (e) {}
-
-    var shopNeedsFix = !currentShop || !allowed[currentShop];
-    var flagNeedsFix = (extraOk && authFlag !== '1') || (!extraOk && authFlag === '1');
-
-    if (shopNeedsFix || flagNeedsFix) {
-      try {
-        localStorage.setItem('ps_shop', (currentShop && allowed[currentShop]) ? currentShop : home);
-        localStorage.setItem('ps_shopwechsel_authorized', extraOk ? '1' : '0');
-      } catch (e) {}
-      try {
-        var u = new URL(window.location.href);
-        ['shop', 'filiale', 'shopwechsel', 'sw'].forEach(function (k) { u.searchParams.delete(k); });
-        location.replace(u.toString());
-      } catch (e) {
-        location.reload();
-      }
-      return false;
-    }
-    return true;
-  }
-
-  function startOnce(profile, isBootstrapAdmin) {
+  function startOnce(profile) {
     if (appStarted) return;
-    if (!enforceShopPermission(profile, isBootstrapAdmin)) return; // Seite laedt mit korrigiertem Shop neu
     appStarted = true;
     try {
       localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
+      localStorage.setItem('ps_shop', (profile && profile.shopId) || 'aalen');
     } catch (e) {}
     __psAddFloatingLogout();
     startAppFn();
@@ -35602,7 +35611,7 @@ function __PS_startAuthGate(startAppFn) {
       '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4 text-center">' +
         '<div class="max-w-sm">' +
           '<h1 class="text-lg font-bold text-slate-800 mb-2">Verbindung fehlgeschlagen</h1>' +
-          '<p class="text-sm text-slate-500 mb-4">Die Zugangsberechtigung konnte nicht geprueft werden. Bitte Internetverbindung pruefen und erneut versuchen.</p>' +
+          '<p class="text-sm text-slate-500 mb-4">' + ((err && err.message) ? err.message : 'Unbekannter Fehler. Bitte erneut versuchen.') + '</p>' +
           '<button id="ps-gate-retry" class="bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg mr-2">Erneut versuchen</button>' +
           '<button id="ps-gate-logout2" class="text-slate-400 text-sm underline">Abmelden</button>' +
         '</div>' +
@@ -35614,141 +35623,88 @@ function __PS_startAuthGate(startAppFn) {
     if (l) l.onclick = function () { auth.signOut().then(function () { location.reload(); }); };
   }
 
-  // Legt automatisch NUR das Administrator-Profil an, falls es beim ersten
-  // Microsoft-Login noch fehlt (kein Passwortkonto, keine Einladung noetig).
-  function bootstrapAdminProfile(user) {
-    var now = Date.now();
-    return __psGetBetaDb().collection('users').doc(user.uid).set({
-      email: user.email,
-      emailLower: (user.email || '').toLowerCase(),
-      name: 'Diego da Silva',
-      vorname: 'Diego',
-      nachname: 'da Silva',
-      role: 'admin',
-      shopId: '',
-      shop: 'Verwaltung / Alle Shops',
-      extraShopIds: [],
-      active: true,
-      status: 'approved',
-      archived: false,
-      isTestUser: false,
-      authProvider: 'microsoft.com',
-      createdAt: now,
-      updatedAt: now
-    }, { merge: true });
-  }
-
-  // Prueft und verbraucht einen persoenlichen Einladungslink (?invite=CODE)
-  // in einer Firestore-Transaction: Einladung muss offen, nicht abgelaufen
-  // und exakt fuer diese Microsoft-E-Mail ausgestellt sein. Erst danach wird
-  // users/{uid} angelegt bzw. aktualisiert (dieselbe Microsoft-/Firebase-
-  // Identitaet wird bei erneuter Einladung wiederverwendet, siehe Punkt 14)
-  // und die Einladung auf "used" gesetzt.
-  function consumeInvite(inviteCode, user) {
-    var db = __psGetBetaDb();
-    var inviteRef = db.collection('invites').doc(inviteCode);
-    var userRef = db.collection('users').doc(user.uid);
-    return db.runTransaction(function (tx) {
-      return tx.get(inviteRef).then(function (snap) {
-        if (!snap.exists) { var e1 = new Error('invalid'); e1.code = 'invite/invalid'; throw e1; }
-        var inv = snap.data() || {};
-        if (inv.status !== 'open') { var e2 = new Error('used'); e2.code = 'invite/used'; throw e2; }
-        if (inv.expiresAt) {
-          var expMs = inv.expiresAt.toMillis ? inv.expiresAt.toMillis() : inv.expiresAt;
-          if (expMs && expMs < Date.now()) { var e3 = new Error('expired'); e3.code = 'invite/expired'; throw e3; }
-        }
-        if ((inv.emailLower || '').toLowerCase() !== (user.email || '').toLowerCase()) {
-          var e4 = new Error('mismatch'); e4.code = 'invite/mismatch'; throw e4;
-        }
-        var now = window.firebase.firestore.FieldValue.serverTimestamp();
-        tx.set(userRef, {
-          email: user.email,
-          emailLower: (user.email || '').toLowerCase(),
-          vorname: inv.vorname || '',
-          nachname: inv.nachname || '',
-          name: inv.name || user.displayName || (user.email || ''),
-          role: inv.role || 'verkaeufer',
-          shopId: inv.shopId || 'aalen',
-          shop: inv.shop || (SHOPS[inv.shopId || 'aalen'] || {}).name || '',
-          extraShopIds: Array.isArray(inv.extraShopIds) ? inv.extraShopIds : [],
-          active: false,
-          status: 'pending',
-          archived: false,
-          isTestUser: false,
-          inviteCode: inviteCode,
-          authProvider: 'microsoft.com',
-          createdAt: now,
-          updatedAt: now
-        }, { merge: true });
-        tx.update(inviteRef, { status: 'used', usedByUid: user.uid, usedAt: now });
+  function renderCompleteProfile(user, isBootstrapAdmin) {
+    __psGateRender(
+      '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+        '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+          '<h1 class="text-xl font-bold text-slate-800 mb-1">Profil vervollständigen</h1>' +
+          '<p class="text-sm text-slate-500 mb-4">Einmalig – dein Name fehlt noch in deinem Konto.</p>' +
+          '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+          '<select id="ps-gate-anrede" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' +
+            '<option value="">Anrede wählen…</option>' +
+            '<option value="Herr">Herr</option>' +
+            '<option value="Frau">Frau</option>' +
+            '<option value="Divers">Divers</option>' +
+          '</select>' +
+          '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+          '<input id="ps-gate-nachname" type="text" placeholder="Nachname" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+          '<select id="ps-gate-shop" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' + __psShopOptionsHtml() + '</select>' +
+          '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Speichern</button>' +
+        '</div>' +
+      '</div>'
+    );
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var anrede = document.getElementById('ps-gate-anrede').value;
+      var vorname = document.getElementById('ps-gate-vorname').value.trim();
+      var nachname = document.getElementById('ps-gate-nachname').value.trim();
+      var shopId = document.getElementById('ps-gate-shop').value;
+      if (!anrede || !nachname) { __psShowError('Bitte Anrede und Nachname ausfüllen.'); return; }
+      var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
+      __psGetBetaDb().collection('users').doc(user.uid).set({
+        email: user.email,
+        anrede: anrede,
+        vorname: vorname,
+        nachname: nachname,
+        name: displayName,
+        shopId: shopId,
+        shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
+        role: isBootstrapAdmin ? 'admin' : 'verkaeufer',
+        status: 'pending',
+        active: false,
+        isTestUser: false,
+        createdAt: Date.now()
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
       });
-    });
+      // Kein weiterer Schritt nötig: der onSnapshot-Listener unten reagiert
+      // automatisch auf das frisch gespeicherte Profil.
+    };
   }
 
   auth.onAuthStateChanged(function (user) {
-    if (!user) { __psRenderAuth(); return; }
-
-    if (!/@hetec-gmbh\.de$/i.test(user.email || '')) {
-      auth.signOut().then(function () {
-        window.__psPendingGateError = 'Nur Microsoft-Konten mit der Endung @hetec-gmbh.de sind zugelassen.';
-        __psRenderAuth();
-      });
-      return;
-    }
-
-    user.getIdToken(true).then(function () {
-      var isBootstrapAdmin = __psIsAdminEmail(user.email);
-
-      function afterProfileMissing() {
-        if (isBootstrapAdmin) {
-          bootstrapAdminProfile(user).catch(showFatal);
-          return; // onSnapshot unten reagiert automatisch auf das neue Profil
-        }
-        if (PS_INVITE_CODE) {
-          consumeInvite(PS_INVITE_CODE, user).catch(function (e) {
-            console.error('Einladung ungueltig:', e);
-            if (e && e.code === 'invite/mismatch') {
-              window.__psPendingGateError = __psFriendlyAuthError(e);
-              auth.signOut().then(function () { __psRenderAuth(); });
-            } else {
-              __psRenderWait('no-access');
-            }
-          });
-          return; // onSnapshot unten reagiert automatisch auf das neue Profil
-        }
-        __psRenderWait('no-access');
+    if (!user) { __psRenderAuth('login'); return; }
+    user.reload().then(function () {
+      if (!user.emailVerified) {
+        __psRenderWait('verify');
+        var iv = setInterval(function () {
+          user.reload().then(function () {
+            if (user.emailVerified) { clearInterval(iv); location.reload(); }
+          }).catch(function () {});
+        }, 4000);
+        return;
       }
-
-      __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
-        var d = snap.data();
-        if (!d) { afterProfileMissing(); return; }
-
-        var allowed = isBootstrapAdmin || (d.active === true && d.status === 'approved' && d.archived !== true);
-        if (allowed) {
-          startOnce(d, isBootstrapAdmin);
-          return;
-        }
-        if (appStarted) {
-          // Sofortige Sperrung, auch waehrend laufender Nutzung.
-          auth.signOut().then(function () { location.reload(); });
-          return;
-        }
-        if (d.archived === true) { __psRenderWait('entfernt'); return; }
-        if (d.status === 'gesperrt') { __psRenderWait('gesperrt'); return; }
-        if (d.status === 'rejected') { __psRenderWait('rejected'); return; }
-        __psRenderWait('approval');
-      }, function (err) { showFatal(err); });
+      // Token neu holen: sonst sieht Firestore kurzzeitig noch die alte
+      // email_verified=false-Eigenschaft und blockiert die Nutzer-Abfrage.
+      user.getIdToken(true).then(function () {
+        var isBootstrapAdmin = __psIsAdminEmail(user.email);
+        __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
+          var d = snap.data();
+          if (!d) {
+            renderCompleteProfile(user, isBootstrapAdmin);
+            return;
+          }
+          if (d.active === true || isBootstrapAdmin) {
+            startOnce(d);
+          } else if (appStarted) {
+            auth.signOut().then(function () { location.reload(); });
+          } else {
+            __psRenderWait('approval');
+          }
+        }, function (err) { showFatal(err); });
+      }).catch(showFatal);
     }).catch(showFatal);
   });
 }
-
-// Falls signInWithPopup blockiert wurde und auf signInWithRedirect
-// ausgewichen ist: Ergebnis nach der Rueckkehr abholen. onAuthStateChanged
-// oben reagiert ohnehin automatisch; hier geht es nur um Fehleranzeige.
-__psGetAuth().getRedirectResult().catch(function (e) {
-  console.error('Redirect-Anmeldung fehlgeschlagen:', e);
-  window.__psPendingGateError = __psFriendlyAuthError(e);
-});
 
 __PS_startAuthGate(__startPencilAppWhenReady);
 
