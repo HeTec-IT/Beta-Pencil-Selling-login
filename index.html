@@ -35968,6 +35968,7 @@ function __PS_startAuthGate(startAppFn) {
       // email_verified=false-Eigenschaft und blockiert die Nutzer-Abfrage.
       user.getIdToken(true).then(function () {
         var isBootstrapAdmin = __psIsAdminEmail(user.email);
+        var autoActivateAttempted = false;
         var unsubscribeUserDoc = __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
           var d = snap.data();
           if (!d) {
@@ -36026,13 +36027,28 @@ function __PS_startAuthGate(startAppFn) {
             // Reload-Umweg (siehe Cache-Hinweis oben).
             if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
             __psDenyAccess('Dein Zugang wurde soeben gesperrt. Bitte wende dich an einen Administrator.', true);
-          } else if (d.status === 'pending') {
-            // SICHERHEITSFIX: KEINE automatische Freischaltung mehr nach
-            // E-Mail-Bestätigung - nur der Adminbereich darf freischalten.
-            // Der Nutzer bleibt angemeldet und sieht die Warteseite; der
-            // Listener reagiert automatisch, sobald ein Administrator
-            // active:true/status:'approved' setzt.
-            __psRenderWait('approval');
+          } else if (d.status === 'pending' && !autoActivateAttempted) {
+            // Auf Wunsch (nach Rücksprache) wieder aktiviert: automatische
+            // Freischaltung nach E-Mail-Bestätigung, damit kein Admin-Klick
+            // nötig ist. Sicher, weil NUR für status:'pending' - ein einmal
+            // abgelehntes/gesperrtes/gelöschtes Konto hat einen ANDEREN
+            // Status und landet weiterhin im else-Zweig (sofort abmelden).
+            // Das eigentliche Loch (fehlendes Profil selbst neu anlegen)
+            // bleibt geschlossen: renderCompleteProfileNameOnly() legt nie
+            // ein neues Profil an. Setzt EXAKT die zwei Firestore-Felder,
+            // die die (unveränderten) Regeln für diese Selbst-Transition
+            // erlauben (status:'pending'/active:false -> 'approved'/true,
+            // nur diese beiden Felder). Schlägt der Schreibvorgang fehl
+            // (z.B. weil die Regeln diese Klausel nicht mehr enthalten),
+            // wird sauber auf die normale Warteseite zurückgefallen.
+            autoActivateAttempted = true;
+            __psGetBetaDb().collection('users').doc(user.uid)
+              .update({ active: true, status: 'approved' })
+              .catch(function (e) {
+                autoActivateAttempted = false;
+                console.error('Automatische Freischaltung fehlgeschlagen (evtl. fehlt die Firestore-Regel dafür):', e);
+                __psRenderWait('approval');
+              });
           } else {
             // rejected / gesperrt / blocked / deleted / unbekannter Status /
             // active:false mit status:'approved' (z.B. Deaktivierung) -
