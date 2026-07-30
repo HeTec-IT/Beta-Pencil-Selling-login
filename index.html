@@ -35950,16 +35950,30 @@ function __PS_startAuthGate(startAppFn) {
       user.getIdToken(true).then(function () {
         var isBootstrapAdmin = __psIsAdminEmail(user.email);
         var autoActivateAttempted = false;
-        __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
+        var unsubscribeUserDoc = __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
           var d = snap.data();
           if (!d) {
+            // BUGFIX: ein leerer Snapshot direkt aus dem lokalen Cache
+            // (z.B. kurz nach einem Token-Refresh oder Sign-out/Reload)
+            // bedeutet NICHT zuverlässig, dass das Profil wirklich fehlt -
+            // nur, dass gerade nichts Gültiges zwischengespeichert ist.
+            // Erst auf eine vom Server bestätigte Antwort warten, bevor
+            // "Profil vervollständigen" gezeigt wird (das legt sonst ein
+            // neues, leeres Profil an und "verliert" das echte Konto).
+            if (snap.metadata && snap.metadata.fromCache) return;
             renderCompleteProfile(user, isBootstrapAdmin);
             return;
           }
           if (d.active === true || isBootstrapAdmin) {
             startOnce(d);
           } else if (appStarted) {
-            auth.signOut().then(function () { location.reload(); });
+            // Admin hat das Konto WÄHREND der Nutzung gesperrt/deaktiviert.
+            // Sofort die Sperr-Meldung zeigen (nicht erst von einem
+            // Sign-out+Reload-Zyklus abhängig machen - siehe Cache-Hinweis
+            // oben). Abmelden läuft danach im Hintergrund weiter.
+            if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
+            __psRenderWait('blocked');
+            auth.signOut().then(function () { location.reload(); }).catch(function () {});
           } else if (d.status === 'pending' && !autoActivateAttempted) {
             // NEU: keine manuelle Admin-Freigabe mehr nötig – die
             // E-Mail-Bestätigung (Domain @hetec-gmbh.de + verifiziert)
