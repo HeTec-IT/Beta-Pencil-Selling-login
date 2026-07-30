@@ -21331,13 +21331,9 @@ function App() {
               setTimeout(() => setShowReferralModal(true), 400);
             }).catch(e => triggerToast('PDF-Fehler: ' + (e && e.message ? e.message : 'Unbekannt')));
           })) return;
-          backgroundAutoUpload({
-            type: 'abschluss',
-            triggerToast,
-            ensurePrintHeaders,
-            getAgent: getAgentDisplayNameForUpload,
-            getDsl: getDslFlagForUpload
-          });
+          // v76: Kein separater Upload mehr hier - laeuft zentral in
+          // dispatchArchiveMail() (ueber sendToArchive nach dem Referral-Schritt),
+          // damit pro Abschluss nur EINE Datei in SharePoint landet, nicht zwei.
           // Exakt dieselbe Logik wie der "PDF drucken / Empfohlen"-Button im FinishTypeModal
           (async () => {
             triggerToast('PDF wird erstellt… einen Moment.');
@@ -25907,22 +25903,30 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       };
     }
     const pdfBase64 = await blobToBase64(blob);
+    // v76: Shop-KENNUNG mitschicken (z.B. 'aalen', 'schwaebisch-hall').
+    // Der Flow baut daraus den Ziel-Ordner - gleiche Logik wie das Mail-System.
+    let _shop = '';
+    try {
+      _shop = String(window.__PS_SHOP_ORT || '').trim();
+    } catch (e) {}
     const payload = {
       type,
       // 'abschluss' | 'angebot'
       dsl,
       // 'ja' | 'nein'
       agent,
+      shop: _shop,
+      // Shop-ID fuer die Ordner-Sortierung im Flow
       date: dateISO.slice(0, 10),
       ts: dateISO,
-      key: PA_SHARED_KEY || undefined,
+      key: PA_SHARED_KEY || '',
       pdfBase64
     };
-    // v75: mode:'no-cors' + text/plain, weil der Power-Automate-HTTP-Trigger
+    // v76: mode:'no-cors' + text/plain, weil der Power-Automate-HTTP-Trigger
     // von Haus aus KEINE CORS-Header liefert. So bleibt es ein "simple request"
-    // (keine Preflight-OPTIONS) und läuft trotzdem durch. Kehrseite: die Antwort
-    // ist "opaque" - Erfolg kann von hier aus nicht mehr geprüft werden. Bewusst
-    // in Kauf genommen, der Verkauf darf nie an diesem Schritt hängen bleiben.
+    // (kein Preflight-OPTIONS) und laeuft trotzdem durch. Kehrseite: die Antwort
+    // ist "opaque" - Erfolg kann von hier aus nicht mehr geprueft werden. Bewusst
+    // in Kauf genommen: der Verkauf darf nie an diesem Schritt haengen bleiben.
     await fetch(PA_UPLOAD_URL, {
       method: 'POST',
       mode: 'no-cors',
@@ -26374,6 +26378,36 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         betreff = buildArchivBetreff(fallbackType, new Date().toISOString().slice(0, 10), '', '');
       }
     } catch (e) {}
+
+    // v76: EIN Ziel fuer ALLE Archiv-Wege. Ist PA_UPLOAD_URL konfiguriert,
+    // laeuft der Versand lautlos ueber Power Automate - die komplette manuelle
+    // Teilen-Kette darunter wird uebersprungen. Bleibt PA_UPLOAD_URL der
+    // Platzhalter, aendert sich am bisherigen (Mail-)Verhalten nichts.
+    if (PA_UPLOAD_URL && !PA_UPLOAD_URL.includes('PASTE_POWER_AUTOMATE_FLOW_URL_HERE')) {
+      const _felder = String(betreff || '').split('|');
+      const _typUpload = _felder[1] === 'abschluss' ? 'abschluss' : 'angebot';
+      const _agentUpload = _felder[3] || '';
+      let _dslUpload = 'nein';
+      try {
+        _dslUpload = getDslFlagForUpload();
+      } catch (e) {}
+      try {
+        await uploadPdfToPowerAutomate({
+          blob,
+          type: _typUpload,
+          dsl: _dslUpload,
+          agent: _agentUpload,
+          dateISO: new Date().toISOString()
+        });
+        try {
+          triggerToast('✅ Archiviert.');
+        } catch (e) {}
+      } catch (e) {
+        console.warn('[ARCHIV-FLOW] Upload fehlgeschlagen:', e);
+      }
+      return; // fertig - kein Teilen-Fenster noetig
+    }
+
     const saveBlob = b => {
       const url = URL.createObjectURL(b);
       const a = document.createElement('a');
