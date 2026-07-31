@@ -229,8 +229,6 @@
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
-    <!-- MANUELLE BENUTZERANLAGE: für sichere Cloud Functions (Benutzeranlage, Passwortänderung, Sperren, Löschen) -->
-    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-functions-compat.js"></script>
     <!-- pdf-lib: Unterschrift in bestehendes Angebots-PDF stempeln (v51.4 "PDF finalisieren") -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <!-- pdf.js: PDF-Vorschau vor der Unterschrift (v51.5) -->
@@ -35623,102 +35621,164 @@ function __psIsAdminEmail(email) {
   return String(email || '').toLowerCase() === PS_ADMIN_EMAIL;
 }
 
-// MANUELLE BENUTZERANLAGE: Cloud-Function-Zugriff (createEmployee,
-// completeInitialPasswordChange, resetEmployeePassword, setEmployeeLock,
-// deleteEmployee) - Region MUSS zur REGION-Konstante in functions/index.js passen.
-function __psGetFunctions() {
-  if (window.__betaFunctions) return window.__betaFunctions;
-  window.__betaFunctions = __psGetBetaApp().functions('europe-west3');
-  return window.__betaFunctions;
+function __psShopOptionsHtml() {
+  var html = '';
+  Object.keys(SHOPS).forEach(function (id) {
+    html += '<option value="' + id + '">' + SHOPS[id].name + '</option>';
+  });
+  return html;
 }
 
-function __psValidatePasswordPolicy(pw) {
-  return typeof pw === 'string' && pw.length >= 10 && /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /[0-9]/.test(pw);
-}
-
-// MANUELLE BENUTZERANLAGE: Selbstregistrierung vollständig entfernt - kein
-// "Registrieren"-Tab, kein createUserWithEmailAndPassword, keine
-// Bestätigungs-E-Mail mehr. Konten werden ausschließlich vom Administrator
-// über die sichere Cloud Function 'createEmployee' angelegt (siehe
-// Administrator-Dashboard). Auch "Passwort vergessen?" (Firebase-Reset-Mail)
-// entfällt - der Administrator setzt Passwörter über 'resetEmployeePassword' zurück.
 function __psRenderAuth(mode, prefill) {
   prefill = prefill || {};
-  var formHtml =
+  var isRegister = mode === 'register';
+  function tabBtn(m, label) {
+    var active = m === mode;
+    return '<button data-mode="' + m + '" class="ps-tab flex-1 py-2 text-sm font-semibold rounded-lg ' +
+      (active ? 'bg-blue-600 text-white' : 'text-slate-500') + '">' + label + '</button>';
+  }
+  var formHtml = isRegister ? (
+    '<select id="ps-gate-anrede" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' +
+      '<option value="">Anrede wählen…</option>' +
+      '<option value="Herr"' + (prefill.anrede === 'Herr' ? ' selected' : '') + '>Herr</option>' +
+      '<option value="Frau"' + (prefill.anrede === 'Frau' ? ' selected' : '') + '>Frau</option>' +
+      '<option value="Divers"' + (prefill.anrede === 'Divers' ? ' selected' : '') + '>Divers</option>' +
+    '</select>' +
+    '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" value="' + (prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-nachname" type="text" placeholder="Nachname" value="' + (prefill.nachname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail (@hetec-gmbh.de)" value="' + (prefill.email || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<select id="ps-gate-shop" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' + __psShopOptionsHtml() + '</select>' +
+    '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>'
+  ) : (
     '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefill.email || '') + '" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<label class="flex items-center gap-2 mb-4 text-sm text-slate-600 cursor-pointer select-none">' +
       '<input id="ps-gate-remember" type="checkbox" checked class="w-4 h-4" /> Zugangsdaten dauerhaft merken' +
     '</label>' +
     '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm mb-2">Anmelden</button>' +
-    '<p class="text-xs text-slate-400 text-center mt-3">Noch keinen Zugang oder Passwort vergessen?<br>Bitte wende dich an deinen Administrator.</p>';
+    '<button id="ps-gate-reset-btn" class="w-full text-blue-600 text-xs py-1">Passwort vergessen?</button>'
+  );
 
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
       '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
         '<h1 class="text-xl font-bold text-slate-800 mb-4">Pencil Selling</h1>' +
+        '<div class="flex gap-1 bg-slate-100 rounded-lg p-1 mb-4">' + tabBtn('login', 'Anmelden') + tabBtn('register', 'Registrieren') + '</div>' +
         '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
         formHtml +
       '</div>' +
     '</div>'
   );
 
-  document.getElementById('ps-gate-submit').onclick = function () {
-    var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
-    var pw = document.getElementById('ps-gate-pw').value;
-    var remember = document.getElementById('ps-gate-remember').checked;
-    if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
-    var auth = __psGetAuth();
-    var persistence = remember ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION;
-    auth.setPersistence(persistence).then(function () {
-      return auth.signInWithEmailAndPassword(email, pw);
-    }).catch(function (e) {
-      __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
-    });
-  };
+  Array.prototype.forEach.call(document.querySelectorAll('.ps-tab'), function (btn) {
+    btn.onclick = function () {
+      var vals = {
+        anrede: (document.getElementById('ps-gate-anrede') || {}).value,
+        vorname: (document.getElementById('ps-gate-vorname') || {}).value,
+        nachname: (document.getElementById('ps-gate-nachname') || {}).value,
+        email: (document.getElementById('ps-gate-email') || {}).value
+      };
+      __psRenderAuth(btn.getAttribute('data-mode'), vals);
+    };
+  });
+
+  if (isRegister) {
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var anrede = document.getElementById('ps-gate-anrede').value;
+      var vorname = document.getElementById('ps-gate-vorname').value.trim();
+      var nachname = document.getElementById('ps-gate-nachname').value.trim();
+      var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
+      var pw = document.getElementById('ps-gate-pw').value;
+      var shopId = document.getElementById('ps-gate-shop').value;
+      if (!anrede || !nachname || !email || !pw) { __psShowError('Bitte Anrede, Nachname, E-Mail und Passwort ausfüllen.'); return; }
+      if (!/@hetec-gmbh\.de$/.test(email)) { __psShowError('Nur E-Mail-Adressen mit @hetec-gmbh.de erlaubt.'); return; }
+      if (pw.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
+      var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
+      var auth = __psGetAuth();
+      auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
+        return auth.createUserWithEmailAndPassword(email, pw);
+      }).then(function (cred) {
+        return cred.user.sendEmailVerification().then(function () {
+          return __psGetBetaDb().collection('users').doc(cred.user.uid).set({
+            email: email,
+            anrede: anrede,
+            vorname: vorname,
+            nachname: nachname,
+            name: displayName,
+            shopId: shopId,
+            shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
+            role: 'verkaeufer',
+            status: 'pending',
+            active: false,
+            isTestUser: false,
+            createdAt: Date.now()
+          });
+        });
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
+      });
+    };
+  } else {
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var email = document.getElementById('ps-gate-email').value.trim().toLowerCase();
+      var pw = document.getElementById('ps-gate-pw').value;
+      var remember = document.getElementById('ps-gate-remember').checked;
+      if (!email || !pw) { __psShowError('Bitte E-Mail und Passwort eingeben.'); return; }
+      var auth = __psGetAuth();
+      var persistence = remember ? window.firebase.auth.Auth.Persistence.LOCAL : window.firebase.auth.Auth.Persistence.SESSION;
+      auth.setPersistence(persistence).then(function () {
+        return auth.signInWithEmailAndPassword(email, pw);
+      }).catch(function (e) {
+        __psShowError('Anmeldung fehlgeschlagen: ' + (e && e.message || e));
+      });
+    };
+    document.getElementById('ps-gate-reset-btn').onclick = function () {
+      var email = document.getElementById('ps-gate-email').value.trim();
+      if (!email) { __psShowError('Bitte zuerst E-Mail eingeben.'); return; }
+      __psGetAuth().sendPasswordResetEmail(email).then(function () {
+        __psShowError('E-Mail zum Zurücksetzen wurde verschickt.');
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
+      });
+    };
+  }
 }
 
-// SICHERHEITSFIX: Erstlogin mit dem vom Administrator vergebenen temporären
-// Passwort - Pencil Selling bleibt gesperrt, bis über die Cloud Function
-// 'completeInitialPasswordChange' ein eigenes Passwort gesetzt wurde
-// (siehe __PS_startAuthGate). Das neue Passwort wird serverseitig geprüft,
-// niemals mit dem temporären Passwort verglichen und nirgendwo gespeichert.
-function __psRenderForceChangePassword() {
+function __psRenderWait(kind) {
+  // SICHERHEITSFIX: 'blocked' entfällt hier - Zugriffsverweigerung (gesperrt/
+  // abgelehnt/deaktiviert/Profil fehlt) meldet jetzt sofort ab und zeigt
+  // Anmelden/Registrieren (siehe __psDenyAccess), statt auf einen eigenen
+  // Wartebildschirm mit manuellem Abmelden-Button zu setzen.
+  var title = kind === 'verify' ? 'E-Mail bestätigen' : 'Warte auf Freigabe';
+  var text = kind === 'verify'
+    ? 'Wir haben dir eine E-Mail geschickt. Bitte bestätige deine Adresse, dann geht es automatisch weiter.'
+    : 'Deine Registrierung war erfolgreich. Dein Zugang muss noch durch einen Administrator freigegeben werden.';
   __psGateRender(
     '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
-      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
-        '<h1 class="text-xl font-bold text-slate-800 mb-1">Persönliches Passwort festlegen</h1>' +
-        '<p class="text-sm text-slate-500 mb-4">Beim ersten Login muss ein eigenes Passwort vergeben werden (mind. 10 Zeichen, Groß- und Kleinbuchstabe, Zahl).</p>' +
-        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
-        '<input id="ps-gate-newpw" type="password" placeholder="Neues Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-        '<input id="ps-gate-newpw2" type="password" placeholder="Passwort wiederholen" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-        '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Passwort speichern</button>' +
+      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-2">' + title + '</h1>' +
+        '<p class="text-sm text-slate-500 mb-5">' + text + '</p>' +
+        (kind === 'verify' ? '<button id="ps-gate-resend" class="w-full text-blue-600 text-xs py-2 mb-2">E-Mail erneut senden</button>' : '') +
+        '<button id="ps-gate-logout" class="w-full text-slate-400 text-xs py-1">Abmelden</button>' +
       '</div>' +
     '</div>'
   );
-  document.getElementById('ps-gate-submit').onclick = function () {
-    var pw1 = document.getElementById('ps-gate-newpw').value;
-    var pw2 = document.getElementById('ps-gate-newpw2').value;
-    if (pw1 !== pw2) { __psShowError('Die Passwörter stimmen nicht überein.'); return; }
-    if (!__psValidatePasswordPolicy(pw1)) { __psShowError('Mind. 10 Zeichen, ein Großbuchstabe, ein Kleinbuchstabe und eine Zahl.'); return; }
-    var btn = document.getElementById('ps-gate-submit');
-    btn.disabled = true; btn.textContent = 'Speichere…';
-    __psGetFunctions().httpsCallable('completeInitialPasswordChange')({ newPassword: pw1 }).then(function () {
-      return __psGetAuth().signOut();
-    }).then(function () {
-      __psRenderAuth('login');
-      __psShowError('Dein persönliches Passwort wurde gespeichert. Bitte melde dich jetzt erneut mit deinem neuen Passwort an.');
-    }).catch(function (e) {
-      btn.disabled = false; btn.textContent = 'Passwort speichern';
-      __psShowError('Fehler: ' + (e && e.message || e));
-    });
+  if (kind === 'verify') {
+    document.getElementById('ps-gate-resend').onclick = function () {
+      var auth = __psGetAuth();
+      if (auth.currentUser) { auth.currentUser.sendEmailVerification().catch(function () {}); }
+    };
+  }
+  document.getElementById('ps-gate-logout').onclick = function () {
+    __psGetAuth().signOut().then(function () { location.reload(); });
   };
 }
 
 // SICHERHEITSFIX: zentrale Funktion für JEDEN Fall, in dem der Zugriff
 // verweigert werden muss (Profil fehlt, gesperrt/abgelehnt/deaktiviert,
 // unbekannter Status, Live-Sperrung während der Nutzung). Zeigt SOFORT
-// die Anmeldeseite mit einer verständlichen Meldung (nicht erst nach
+// Anmelden/Registrieren mit einer verständlichen Meldung (nicht erst nach
 // einem Reload) und meldet die Firebase-Sitzung zuverlässig ab.
 // reloadAfter=true nur dann, wenn zuvor schon die komplette Pencil-Selling-
 // Oberfläche lief (appStarted) - dort sorgt ein Reload nach dem Abmelden für
@@ -35895,12 +35955,20 @@ function __PS_startAuthGate(startAppFn) {
       return;
     }
     user.reload().then(function () {
-      // MANUELLE BENUTZERANLAGE: E-Mail-Bestätigung entfällt - der
-      // Administrator legt Konten über die Cloud Function 'createEmployee'
-      // bereits mit emailVerified:true an. Es gibt keine Selbstregistrierung
-      // und keine Bestätigungs-E-Mail mehr, daher auch keinen Wartescreen.
+      if (!user.emailVerified) {
+        __psRenderWait('verify');
+        var iv = setInterval(function () {
+          user.reload().then(function () {
+            if (user.emailVerified) { clearInterval(iv); location.reload(); }
+          }).catch(function () {});
+        }, 4000);
+        return;
+      }
+      // Token neu holen: sonst sieht Firestore kurzzeitig noch die alte
+      // email_verified=false-Eigenschaft und blockiert die Nutzer-Abfrage.
       user.getIdToken(true).then(function () {
         var isBootstrapAdmin = __psIsAdminEmail(user.email);
+        var autoActivateAttempted = false;
         var unsubscribeUserDoc = __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
           var d = snap.data();
           if (!d) {
@@ -35926,7 +35994,6 @@ function __PS_startAuthGate(startAppFn) {
                 active: true,
                 status: 'approved',
                 isTestUser: false,
-                mustChangePassword: false,
                 shopId: '',
                 shop: 'Verwaltung / Alle Shops',
                 createdAt: Date.now()
@@ -35941,16 +36008,11 @@ function __PS_startAuthGate(startAppFn) {
             __psDenyAccess('Dein Zugang ist nicht mehr vorhanden oder wurde gesperrt. Bitte wende dich an einen Administrator.', appStarted);
             return;
           }
-          // SICHERHEITSFIX: strenge Positivprüfung. Zugriff auf das Pencil
-          // Selling gibt es nur bei active:true UND status:'approved' UND
-          // mustChangePassword!==true. Bestandsmitarbeiter ohne das neue
-          // Feld mustChangePassword (vor dieser Umstellung angelegt) werden
-          // dadurch NICHT nachträglich ausgesperrt - kein manueller
-          // Datenbank-Eingriff nötig. Nur ein explizites
-          // mustChangePassword:true (frisch von 'createEmployee' angelegt
-          // oder von 'resetEmployeePassword' zurückgesetzt) erzwingt den
-          // Passwort-Ändern-Screen unten.
-          var darfZugreifen = d.active === true && d.status === 'approved' && d.mustChangePassword !== true;
+          // SICHERHEITSFIX: strenge Positivprüfung statt einer laxen
+          // "!== false"-Prüfung. Nur bei GENAU diesen beiden Werten wird
+          // Zugriff gewährt; jeder andere/unbekannte/fehlende Status wird
+          // als "kein Zugriff" behandelt.
+          var darfZugreifen = d.active === true && d.status === 'approved';
           if (darfZugreifen || isBootstrapAdmin) {
             var fehltName = !((d.nachname && String(d.nachname).trim()) || (d.name && String(d.name).trim()));
             if (fehltName && !isBootstrapAdmin) {
@@ -35958,24 +36020,39 @@ function __PS_startAuthGate(startAppFn) {
             } else {
               startOnce(d);
             }
-          } else if (d.active === true && d.status === 'approved' && d.mustChangePassword === true) {
-            // MANUELLE BENUTZERANLAGE: Erstlogin mit temporärem, vom Admin
-            // vergebenem Passwort - Pencil Selling bleibt gesperrt, bis über
-            // completeInitialPasswordChange ein eigenes Passwort gesetzt wurde.
-            __psRenderForceChangePassword();
           } else if (appStarted) {
             // Admin hat das Konto WÄHREND der Nutzung gesperrt/deaktiviert
             // (oder das Profil gelöscht). Sofort abmelden und zur
-            // Anmeldeseite - nicht erst nach einem Reload-Umweg (siehe
-            // Cache-Hinweis oben).
+            // Anmelden/Registrieren-Seite - nicht erst nach einem
+            // Reload-Umweg (siehe Cache-Hinweis oben).
             if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
             __psDenyAccess('Dein Zugang wurde soeben gesperrt. Bitte wende dich an einen Administrator.', true);
+          } else if (d.status === 'pending' && !autoActivateAttempted) {
+            // Auf Wunsch (nach Rücksprache) wieder aktiviert: automatische
+            // Freischaltung nach E-Mail-Bestätigung, damit kein Admin-Klick
+            // nötig ist. Sicher, weil NUR für status:'pending' - ein einmal
+            // abgelehntes/gesperrtes/gelöschtes Konto hat einen ANDEREN
+            // Status und landet weiterhin im else-Zweig (sofort abmelden).
+            // Das eigentliche Loch (fehlendes Profil selbst neu anlegen)
+            // bleibt geschlossen: renderCompleteProfileNameOnly() legt nie
+            // ein neues Profil an. Setzt EXAKT die zwei Firestore-Felder,
+            // die die (unveränderten) Regeln für diese Selbst-Transition
+            // erlauben (status:'pending'/active:false -> 'approved'/true,
+            // nur diese beiden Felder). Schlägt der Schreibvorgang fehl
+            // (z.B. weil die Regeln diese Klausel nicht mehr enthalten),
+            // wird sauber auf die normale Warteseite zurückgefallen.
+            autoActivateAttempted = true;
+            __psGetBetaDb().collection('users').doc(user.uid)
+              .update({ active: true, status: 'approved' })
+              .catch(function (e) {
+                autoActivateAttempted = false;
+                console.error('Automatische Freischaltung fehlgeschlagen (evtl. fehlt die Firestore-Regel dafür):', e);
+                __psRenderWait('approval');
+              });
           } else {
-            // SICHERHEITSFIX: keine Selbstregistrierung mehr, also auch
-            // keine automatische Freischaltung von status:'pending' mehr.
-            // rejected / blocked / gesperrt / pending / deleted /
-            // unbekannter Status / active:false mit status:'approved' (z.B.
-            // Deaktivierung) - niemals Zugriff erlauben, sofort abmelden.
+            // rejected / gesperrt / blocked / deleted / unbekannter Status /
+            // active:false mit status:'approved' (z.B. Deaktivierung) -
+            // niemals Zugriff erlauben, sofort abmelden.
             if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
             __psDenyAccess('Dein Zugang ist nicht mehr vorhanden oder wurde gesperrt. Bitte wende dich an einen Administrator.', false);
           }
