@@ -35916,6 +35916,15 @@ function __PS_startAuthGate(startAppFn) {
 
         creatingProfile = false;
 
+        // Nach einer erfolgreichen Anmeldung wird ein eventuell noch
+        // vorhandener Vorbereitungseintrag automatisch entfernt. Das hält die
+        // Admin-Liste sauber und funktioniert auch nach einem UID-Wechsel.
+        if (!isBootstrapAdmin && user.email) {
+          __psGetBetaDb().collection('user_setups')
+            .doc(String(user.email).trim().toLowerCase())
+            .delete().catch(function () {});
+        }
+
         if (isBootstrapAdmin) {
           startOnce(d);
           return;
