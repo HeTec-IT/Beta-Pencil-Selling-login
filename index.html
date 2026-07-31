@@ -230,6 +230,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
     <!-- MANUELLE BENUTZERANLAGE: für sichere Cloud Functions (Benutzeranlage, Passwortänderung, Sperren, Löschen) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-functions-compat.js"></script>
     <!-- pdf-lib: Unterschrift in bestehendes Angebots-PDF stempeln (v51.4 "PDF finalisieren") -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <!-- pdf.js: PDF-Vorschau vor der Unterschrift (v51.5) -->
@@ -35560,11 +35561,16 @@ function __startPencilAppWhenReady(attempt = 0) {
   }
 }
 // ═══════════════════════════════════════════════════════════════
-// AUTH-GATE – einfache Variante ohne Cloud Functions.
-// Konten werden manuell in Firebase Authentication angelegt.
-// Name, Rolle und Shop werden vorher im Admin-Dashboard unter user_setups
-// vorbereitet. Beim ersten Login übernimmt die App diese Angaben sicher und
-// aktiviert den Zugang automatisch – ohne Freigabe-Schritt.
+// AUTH-GATE (Login / Selbstregistrierung / Freigabe) — NEU.
+// Ändert nichts an der bestehenden App. Ersetzt nur den direkten
+// Start-Aufruf unten durch diesen Gate-Check; danach läuft alles
+// exakt wie vorher (LINK_EMPLOYEE/CURRENT_SHOP_ID lesen wie bisher
+// aus localStorage 'ps_link_agent' / 'ps_shop').
+// Login/Registrierung/Freigabe laufen im EIGENEN Firebase-Projekt
+// "Beta Pencil Selling" (beta-pencil-selling) — komplett getrennt
+// vom Stats-Projekt (pencil-selling-stats-2f86e). Keine Einladungen
+// mehr nötig: Mitarbeiter registrieren sich selbst, Freigabe läuft
+// über das Administrator-Dashboard (Feld 'active' in users/{uid}).
 // ═══════════════════════════════════════════════════════════════
 const BETA_FB_CONFIG = {
   apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
@@ -35617,8 +35623,25 @@ function __psIsAdminEmail(email) {
   return String(email || '').toLowerCase() === PS_ADMIN_EMAIL;
 }
 
-// Keine Selbstregistrierung und kein Passwort-Reset in der App.
-// Der Administrator legt Konten manuell unter Firebase Authentication an.
+// MANUELLE BENUTZERANLAGE: Cloud-Function-Zugriff (createEmployee,
+// completeInitialPasswordChange, resetEmployeePassword, setEmployeeLock,
+// deleteEmployee) - Region MUSS zur REGION-Konstante in functions/index.js passen.
+function __psGetFunctions() {
+  if (window.__betaFunctions) return window.__betaFunctions;
+  window.__betaFunctions = __psGetBetaApp().functions('europe-west3');
+  return window.__betaFunctions;
+}
+
+function __psValidatePasswordPolicy(pw) {
+  return typeof pw === 'string' && pw.length >= 10 && /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /[0-9]/.test(pw);
+}
+
+// MANUELLE BENUTZERANLAGE: Selbstregistrierung vollständig entfernt - kein
+// "Registrieren"-Tab, kein createUserWithEmailAndPassword, keine
+// Bestätigungs-E-Mail mehr. Konten werden ausschließlich vom Administrator
+// über die sichere Cloud Function 'createEmployee' angelegt (siehe
+// Administrator-Dashboard). Auch "Passwort vergessen?" (Firebase-Reset-Mail)
+// entfällt - der Administrator setzt Passwörter über 'resetEmployeePassword' zurück.
 function __psRenderAuth(mode, prefill) {
   prefill = prefill || {};
   var formHtml =
@@ -35655,6 +35678,42 @@ function __psRenderAuth(mode, prefill) {
   };
 }
 
+// SICHERHEITSFIX: Erstlogin mit dem vom Administrator vergebenen temporären
+// Passwort - Pencil Selling bleibt gesperrt, bis über die Cloud Function
+// 'completeInitialPasswordChange' ein eigenes Passwort gesetzt wurde
+// (siehe __PS_startAuthGate). Das neue Passwort wird serverseitig geprüft,
+// niemals mit dem temporären Passwort verglichen und nirgendwo gespeichert.
+function __psRenderForceChangePassword() {
+  __psGateRender(
+    '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+      '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+        '<h1 class="text-xl font-bold text-slate-800 mb-1">Persönliches Passwort festlegen</h1>' +
+        '<p class="text-sm text-slate-500 mb-4">Beim ersten Login muss ein eigenes Passwort vergeben werden (mind. 10 Zeichen, Groß- und Kleinbuchstabe, Zahl).</p>' +
+        '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+        '<input id="ps-gate-newpw" type="password" placeholder="Neues Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+        '<input id="ps-gate-newpw2" type="password" placeholder="Passwort wiederholen" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+        '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Passwort speichern</button>' +
+      '</div>' +
+    '</div>'
+  );
+  document.getElementById('ps-gate-submit').onclick = function () {
+    var pw1 = document.getElementById('ps-gate-newpw').value;
+    var pw2 = document.getElementById('ps-gate-newpw2').value;
+    if (pw1 !== pw2) { __psShowError('Die Passwörter stimmen nicht überein.'); return; }
+    if (!__psValidatePasswordPolicy(pw1)) { __psShowError('Mind. 10 Zeichen, ein Großbuchstabe, ein Kleinbuchstabe und eine Zahl.'); return; }
+    var btn = document.getElementById('ps-gate-submit');
+    btn.disabled = true; btn.textContent = 'Speichere…';
+    __psGetFunctions().httpsCallable('completeInitialPasswordChange')({ newPassword: pw1 }).then(function () {
+      return __psGetAuth().signOut();
+    }).then(function () {
+      __psRenderAuth('login');
+      __psShowError('Dein persönliches Passwort wurde gespeichert. Bitte melde dich jetzt erneut mit deinem neuen Passwort an.');
+    }).catch(function (e) {
+      btn.disabled = false; btn.textContent = 'Passwort speichern';
+      __psShowError('Fehler: ' + (e && e.message || e));
+    });
+  };
+}
 
 // SICHERHEITSFIX: zentrale Funktion für JEDEN Fall, in dem der Zugriff
 // verweigert werden muss (Profil fehlt, gesperrt/abgelehnt/deaktiviert,
@@ -35718,36 +35777,15 @@ function __PS_startAuthGate(startAppFn) {
   var auth = __psGetAuth();
   if (!auth) { startAppFn(); return; }
   var appStarted = false;
-  var lastAccessSignature = '';
-
-  function accessSignature(profile) {
-    var extras = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds.slice().sort() : [];
-    return JSON.stringify([
-      (profile && profile.shopId) || '',
-      !!(profile && profile.isSpringer === true),
-      extras
-    ]);
-  }
 
   function startOnce(profile) {
     if (appStarted) return;
     appStarted = true;
-    lastAccessSignature = accessSignature(profile);
     var _home = (profile && profile.shopId) || 'aalen';
-    var _springer = !!(profile && profile.isSpringer === true);
     var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
-    var _allowed = _springer
-      ? Object.keys(SHOPS)
-      : [_home].concat(_extra.filter(function (id) { return id !== _home && !!SHOPS[id]; }));
+    var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
     var _priorShop = null;
-    var _priorAllowed = [];
-    var _priorSwitch = '0';
-    try {
-      _priorShop = localStorage.getItem('ps_shop');
-      var _rawPriorAllowed = JSON.parse(localStorage.getItem('ps_allowed_shops') || '[]');
-      _priorAllowed = Array.isArray(_rawPriorAllowed) ? _rawPriorAllowed : [];
-      _priorSwitch = localStorage.getItem('ps_shopwechsel') || '0';
-    } catch (e) {}
+    try { _priorShop = localStorage.getItem('ps_shop'); } catch (e) {}
     // BUGFIX: 'ps_shop' NICHT mehr blind auf den Heimatshop zurücksetzen –
     // das hat einen manuell (per erlaubtem Shop-Wechsel) gewählten Shop bei
     // jedem Login wieder überschrieben. Der zuletzt gewählte Shop bleibt
@@ -35759,12 +35797,14 @@ function __PS_startAuthGate(startAppFn) {
     try {
       localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
       localStorage.setItem('ps_shop', _effectiveShop);
-      // Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen:
-      // - isSpringer == true: alle Shops sind freigegeben.
-      // - sonst: Heimatshop plus die vom Admin einzeln freigegebenen
-      //   Zusatzstandorte aus extraShopIds.
+      // Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen. Ohne
+      // Freigabe bleibt ein Mitarbeiter auf seinem Heimatshop (shopId)
+      // stationär. Erst ein Eintrag in extraShopIds (vom Administrator im
+      // Dashboard gesetzt, "Weitere Standorte verwalten") gibt zusätzliche
+      // Standorte frei – exakt dieselbe bereits im Admin-Dashboard vorhandene
+      // Logik, hier nur konsumiert.
       localStorage.setItem('ps_allowed_shops', JSON.stringify(_allowed));
-      localStorage.setItem('ps_shopwechsel', (_springer || _allowed.length > 1) ? '1' : '0');
+      localStorage.setItem('ps_shopwechsel', _extra.length > 0 ? '1' : '0');
     } catch (e) {}
     // CURRENT_SHOP_ID (und PS_ALLOWED_SHOP_IDS) sind oben im Skript als
     // const berechnet, BEVOR das Firestore-Profil geladen ist – also aus
@@ -35773,9 +35813,7 @@ function __PS_startAuthGate(startAppFn) {
     // beim allerersten Start, oder wenn eine Freigabe entzogen wurde), hilft
     // ein einmaliger, selbstbeendender Reload – genau wie beim manuellen
     // "Shop wechseln" – damit CURRENT_SHOP_ID neu und korrekt berechnet wird.
-    var _newSwitch = (_springer || _allowed.length > 1) ? '1' : '0';
-    var _permissionsChanged = JSON.stringify(_priorAllowed) !== JSON.stringify(_allowed) || _priorSwitch !== _newSwitch;
-    if (_effectiveShop !== CURRENT_SHOP_ID || _permissionsChanged) {
+    if (_effectiveShop !== CURRENT_SHOP_ID) {
       try {
         var u = new URL(window.location.href);
         u.searchParams.delete('shop');
@@ -35806,191 +35844,143 @@ function __PS_startAuthGate(startAppFn) {
     if (l) l.onclick = function () { auth.signOut().then(function () { location.reload(); }); };
   }
 
+  // SICHERHEITSFIX: ersetzt das bisherige renderCompleteProfile(), das bei
+  // JEDEM fehlenden Profil (auch bei gesperrten/gelöschten Konten) ein neues
+  // "pending"-Profil per set() angelegt und damit die Sperre unterlaufen hat.
+  // Diese Funktion wird NUR noch für ein bereits freigegebenes Profil
+  // (active===true && status==='approved') mit fehlendem Namen aufgerufen
+  // und aktualisiert AUSSCHLIESSLICH vorname/nachname/name per update() -
+  // exakt die Felder, die die Firestore-Regeln für Selbst-Updates erlauben.
+  // Kein shopId, keine Rolle, kein status/active, kein neues Profil.
+  // Hinweis: 'Anrede' fehlt hier bewusst, weil die (laut Auftrag
+  // unveränderten) Firestore-Regeln für Selbst-Updates nur
+  // ['name','vorname','nachname'] zulassen - Diego kann 'anrede' bei Bedarf
+  // selbst zu dieser Liste in den Regeln hinzufügen.
+  function renderCompleteProfileNameOnly(user) {
+    __psGateRender(
+      '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
+        '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6">' +
+          '<h1 class="text-xl font-bold text-slate-800 mb-1">Profil vervollständigen</h1>' +
+          '<p class="text-sm text-slate-500 mb-4">Einmalig – dein Name fehlt noch in deinem (bereits freigegebenen) Konto.</p>' +
+          '<div id="ps-gate-msg" class="hidden text-sm text-red-600 bg-red-50 rounded-lg p-2 mb-3"></div>' +
+          '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+          '<input id="ps-gate-nachname" type="text" placeholder="Nachname" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+          '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Speichern</button>' +
+        '</div>' +
+      '</div>'
+    );
+    document.getElementById('ps-gate-submit').onclick = function () {
+      var vorname = document.getElementById('ps-gate-vorname').value.trim();
+      var nachname = document.getElementById('ps-gate-nachname').value.trim();
+      if (!nachname) { __psShowError('Bitte mindestens den Nachnamen ausfüllen.'); return; }
+      var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
+      __psGetBetaDb().collection('users').doc(user.uid).update({
+        vorname: vorname,
+        nachname: nachname,
+        name: displayName
+      }).catch(function (e) {
+        __psShowError('Fehler: ' + (e && e.message || e));
+      });
+      // Kein weiterer Schritt nötig: der onSnapshot-Listener unten reagiert
+      // automatisch auf das aktualisierte Profil.
+    };
+  }
 
   auth.onAuthStateChanged(function (user) {
     if (!user) { __psRenderAuth('login'); return; }
+    // SICHERHEITSFIX: Sicherheitsreihenfolge - Domain zuerst prüfen, vor
+    // jeder weiteren Prüfung/jedem Firestore-Zugriff.
     if (!/@hetec-gmbh\.de$/i.test(user.email || '')) {
       __psDenyAccess('Dieses Konto ist für Pencil Selling nicht zugelassen (nur @hetec-gmbh.de).', false);
       return;
     }
-
     user.reload().then(function () {
-      return user.getIdToken(true);
-    }).then(function () {
-      var isBootstrapAdmin = __psIsAdminEmail(user.email);
-      var userRef = __psGetBetaDb().collection('users').doc(user.uid);
-      var creatingProfile = false;
-      var unsubscribeUserDoc = userRef.onSnapshot(function (snap) {
-        var d = snap.data();
-
-        if (!d) {
-          if (snap.metadata && snap.metadata.fromCache) return;
-
-          if (isBootstrapAdmin) {
-            userRef.set({
-              email: user.email,
-              name: 'Diego da Silva',
-              vorname: 'Diego',
-              nachname: 'da Silva',
-              role: 'admin',
-              active: true,
-              status: 'approved',
-              isTestUser: false,
-              shopId: '',
-              shop: 'Verwaltung / Alle Shops',
-              extraShopIds: [],
-              isSpringer: true,
-              createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-              updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-            }).catch(function (e) { showFatal(e); });
-            return;
-          }
-
-          // Wurde ein bereits laufender Zugang vom Administrator entfernt,
-          // sofort abmelden. Ohne einen neuen, ausdrücklich im Admin angelegten
-          // Vorbereitungsdatensatz kann kein Profil neu entstehen.
-          if (appStarted) {
-            if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-            __psDenyAccess('Dein Zugang wurde entfernt. Bitte wende dich an einen Administrator.', true);
-            return;
-          }
-
-          if (!creatingProfile) {
-            creatingProfile = true;
-            var setupId = String(user.email || '').trim().toLowerCase();
-            var setupRef = __psGetBetaDb().collection('user_setups').doc(setupId);
-            setupRef.get().then(function (setupSnap) {
-              if (!setupSnap.exists) {
-                creatingProfile = false;
-                if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-                __psDenyAccess('Für diese E-Mail wurde im Admin-Dashboard noch kein Zugang vorbereitet.', false);
-                return;
-              }
-              var s = setupSnap.data() || {};
-              var setupValid = String(s.email || '').toLowerCase() === setupId &&
-                s.active === true && s.status === 'approved' && !!s.shopId &&
-                !!String(s.vorname || '').trim() && !!String(s.nachname || '').trim() &&
-                !!String(s.name || '').trim() && (s.role === 'verkaeufer' || s.role === 'filialleiter');
-              if (!setupValid) {
-                creatingProfile = false;
-                if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-                __psDenyAccess('Der vorbereitete Zugang ist unvollständig. Bitte wende dich an den Administrator.', false);
-                return;
-              }
-              return userRef.set({
+      // MANUELLE BENUTZERANLAGE: E-Mail-Bestätigung entfällt - der
+      // Administrator legt Konten über die Cloud Function 'createEmployee'
+      // bereits mit emailVerified:true an. Es gibt keine Selbstregistrierung
+      // und keine Bestätigungs-E-Mail mehr, daher auch keinen Wartescreen.
+      user.getIdToken(true).then(function () {
+        var isBootstrapAdmin = __psIsAdminEmail(user.email);
+        var unsubscribeUserDoc = __psGetBetaDb().collection('users').doc(user.uid).onSnapshot(function (snap) {
+          var d = snap.data();
+          if (!d) {
+            // BUGFIX: ein leerer Snapshot direkt aus dem lokalen Cache
+            // (z.B. kurz nach einem Token-Refresh oder Sign-out/Reload)
+            // bedeutet NICHT zuverlässig, dass das Profil wirklich fehlt -
+            // nur, dass gerade nichts Gültiges zwischengespeichert ist.
+            // Erst auf eine vom Server bestätigte Antwort warten.
+            if (snap.metadata && snap.metadata.fromCache) return;
+            if (isBootstrapAdmin) {
+              // Admin-Bootstrapping: falls der Administrator die Haupt-App
+              // vor dem Admin-Dashboard öffnet, existiert sein eigenes
+              // Profil evtl. noch nicht - identisch zu ensureAdminProfile()
+              // im Dashboard automatisch anlegen. Betrifft ausschließlich
+              // d.dasilva@hetec-gmbh.de; für alle anderen gilt unten die
+              // Zugriffsverweigerung.
+              __psGetBetaDb().collection('users').doc(user.uid).set({
                 email: user.email,
-                vorname: String(s.vorname || '').trim(),
-                nachname: String(s.nachname || '').trim(),
-                name: String(s.name || '').trim(),
-                role: s.role,
+                name: 'Diego da Silva',
+                vorname: 'Diego',
+                nachname: 'da Silva',
+                role: 'admin',
                 active: true,
                 status: 'approved',
-                shopId: s.shopId,
-                shop: s.shop || '',
-                extraShopIds: Array.isArray(s.extraShopIds) ? s.extraShopIds : [],
-                isSpringer: s.isSpringer === true,
-                isTestUser: s.isTestUser === true,
-                createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
-                updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
-              }).then(function () {
-                // Der vorbereitete Datensatz wird nach erfolgreicher Übernahme
-                // entfernt. Das Passwort war dort zu keiner Zeit gespeichert.
-                return setupRef.delete().catch(function () {});
-              });
-            }).catch(function (e) {
-              creatingProfile = false;
-              showFatal(e);
-            });
-          }
-          __psGateRender(
-            '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4">' +
-              '<div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 text-center">' +
-                '<div style="font-size:40px;margin-bottom:10px">🔐</div>' +
-                '<h1 class="text-xl font-bold text-slate-800 mb-2">Zugang wird eingerichtet</h1>' +
-                '<p class="text-sm text-slate-500">Deine vorbereiteten Angaben werden übernommen.</p>' +
-              '</div>' +
-            '</div>'
-          );
-          return;
-        }
-
-        creatingProfile = false;
-
-        // Nach einer erfolgreichen Anmeldung wird ein eventuell noch
-        // vorhandener Vorbereitungseintrag automatisch entfernt. Das hält die
-        // Admin-Liste sauber und funktioniert auch nach einem UID-Wechsel.
-        if (!isBootstrapAdmin && user.email) {
-          __psGetBetaDb().collection('user_setups')
-            .doc(String(user.email).trim().toLowerCase())
-            .delete().catch(function () {});
-        }
-
-        if (isBootstrapAdmin) {
-          startOnce(d);
-          return;
-        }
-
-        var blocked = d.status === 'blocked' || d.status === 'gesperrt' || d.status === 'deleted';
-        if (blocked) {
-          if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-          __psDenyAccess('Dein Zugang wurde gesperrt oder entfernt. Bitte wende dich an einen Administrator.', appStarted);
-          return;
-        }
-
-        var darfZugreifen = d.active === true && d.status === 'approved' && !!d.shopId;
-        if (darfZugreifen) {
-          var fehltName = !((d.nachname && String(d.nachname).trim()) || (d.name && String(d.name).trim()));
-          if (fehltName) {
-            if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-            __psDenyAccess('In deinem Profil fehlt der Name. Bitte wende dich an den Administrator.', false);
-          } else if (appStarted && lastAccessSignature !== accessSignature(d)) {
-            // Hauptshop, Zusatzstandorte oder Springer-Status wurden im Admin
-            // geändert. Die App übernimmt das automatisch und lädt einmal neu.
-            lastAccessSignature = accessSignature(d);
-            var changedHome = d.shopId || 'aalen';
-            var changedSpringer = d.isSpringer === true;
-            var changedExtra = Array.isArray(d.extraShopIds) ? d.extraShopIds : [];
-            var changedAllowed = changedSpringer
-              ? Object.keys(SHOPS)
-              : [changedHome].concat(changedExtra.filter(function (id) { return id !== changedHome && !!SHOPS[id]; }));
-            var currentSaved = null;
-            try { currentSaved = localStorage.getItem('ps_shop'); } catch (e) {}
-            var changedEffective = (currentSaved && changedAllowed.indexOf(currentSaved) !== -1) ? currentSaved : changedHome;
-            try {
-              localStorage.setItem('ps_shop', changedEffective);
-              localStorage.setItem('ps_allowed_shops', JSON.stringify(changedAllowed));
-              localStorage.setItem('ps_shopwechsel', (changedSpringer || changedAllowed.length > 1) ? '1' : '0');
-            } catch (e) {}
-            try {
-              var changedUrl = new URL(window.location.href);
-              changedUrl.searchParams.delete('shop');
-              changedUrl.searchParams.delete('filiale');
-              window.__psIntentionalReload = true;
-              window.location.replace(changedUrl.toString());
-            } catch (e) {
-              window.location.reload();
+                isTestUser: false,
+                mustChangePassword: false,
+                shopId: '',
+                shop: 'Verwaltung / Alle Shops',
+                createdAt: Date.now()
+              }).catch(function (e) { console.error('Admin-Profil konnte nicht angelegt werden:', e); });
+              return; // onSnapshot feuert gleich erneut mit dem frisch angelegten Profil
             }
-          } else {
-            startOnce(d);
+            // SICHERHEITSFIX: Fehlendes Profil darf niemals neu angelegt
+            // werden - weder durch "Profil vervollständigen" noch sonst
+            // irgendeine automatische Profilerstellung. Immer: Zugang
+            // verweigern und abmelden, niemals ein neues Profil erzeugen.
+            if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
+            __psDenyAccess('Dein Zugang ist nicht mehr vorhanden oder wurde gesperrt. Bitte wende dich an einen Administrator.', appStarted);
+            return;
           }
-          return;
-        }
-
-        // Wird ein aktiver Mitarbeiter während der Nutzung gesperrt oder der
-        // Shop entfernt, endet der Zugriff sofort.
-        if (appStarted) {
-          if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-          __psDenyAccess('Dein Zugang wurde soeben gesperrt oder die Shop-Zuweisung entfernt.', true);
-          return;
-        }
-
-        if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
-        if (!d.shopId) {
-          __psDenyAccess('Deinem Konto ist kein Shop zugewiesen. Bitte wende dich an den Administrator.', false);
-        } else {
-          __psDenyAccess('Dein Zugang ist derzeit nicht aktiv. Bitte wende dich an den Administrator.', false);
-        }
-      }, function (err) { showFatal(err); });
+          // SICHERHEITSFIX: strenge Positivprüfung. Zugriff auf das Pencil
+          // Selling gibt es nur bei active:true UND status:'approved' UND
+          // mustChangePassword!==true. Bestandsmitarbeiter ohne das neue
+          // Feld mustChangePassword (vor dieser Umstellung angelegt) werden
+          // dadurch NICHT nachträglich ausgesperrt - kein manueller
+          // Datenbank-Eingriff nötig. Nur ein explizites
+          // mustChangePassword:true (frisch von 'createEmployee' angelegt
+          // oder von 'resetEmployeePassword' zurückgesetzt) erzwingt den
+          // Passwort-Ändern-Screen unten.
+          var darfZugreifen = d.active === true && d.status === 'approved' && d.mustChangePassword !== true;
+          if (darfZugreifen || isBootstrapAdmin) {
+            var fehltName = !((d.nachname && String(d.nachname).trim()) || (d.name && String(d.name).trim()));
+            if (fehltName && !isBootstrapAdmin) {
+              renderCompleteProfileNameOnly(user);
+            } else {
+              startOnce(d);
+            }
+          } else if (d.active === true && d.status === 'approved' && d.mustChangePassword === true) {
+            // MANUELLE BENUTZERANLAGE: Erstlogin mit temporärem, vom Admin
+            // vergebenem Passwort - Pencil Selling bleibt gesperrt, bis über
+            // completeInitialPasswordChange ein eigenes Passwort gesetzt wurde.
+            __psRenderForceChangePassword();
+          } else if (appStarted) {
+            // Admin hat das Konto WÄHREND der Nutzung gesperrt/deaktiviert
+            // (oder das Profil gelöscht). Sofort abmelden und zur
+            // Anmeldeseite - nicht erst nach einem Reload-Umweg (siehe
+            // Cache-Hinweis oben).
+            if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
+            __psDenyAccess('Dein Zugang wurde soeben gesperrt. Bitte wende dich an einen Administrator.', true);
+          } else {
+            // SICHERHEITSFIX: keine Selbstregistrierung mehr, also auch
+            // keine automatische Freischaltung von status:'pending' mehr.
+            // rejected / blocked / gesperrt / pending / deleted /
+            // unbekannter Status / active:false mit status:'approved' (z.B.
+            // Deaktivierung) - niemals Zugriff erlauben, sofort abmelden.
+            if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
+            __psDenyAccess('Dein Zugang ist nicht mehr vorhanden oder wurde gesperrt. Bitte wende dich an einen Administrator.', false);
+          }
+        }, function (err) { showFatal(err); });
+      }).catch(showFatal);
     }).catch(showFatal);
   });
 }
