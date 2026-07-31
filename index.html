@@ -35718,15 +35718,36 @@ function __PS_startAuthGate(startAppFn) {
   var auth = __psGetAuth();
   if (!auth) { startAppFn(); return; }
   var appStarted = false;
+  var lastAccessSignature = '';
+
+  function accessSignature(profile) {
+    var extras = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds.slice().sort() : [];
+    return JSON.stringify([
+      (profile && profile.shopId) || '',
+      !!(profile && profile.isSpringer === true),
+      extras
+    ]);
+  }
 
   function startOnce(profile) {
     if (appStarted) return;
     appStarted = true;
+    lastAccessSignature = accessSignature(profile);
     var _home = (profile && profile.shopId) || 'aalen';
+    var _springer = !!(profile && profile.isSpringer === true);
     var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
-    var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
+    var _allowed = _springer
+      ? Object.keys(SHOPS)
+      : [_home].concat(_extra.filter(function (id) { return id !== _home && !!SHOPS[id]; }));
     var _priorShop = null;
-    try { _priorShop = localStorage.getItem('ps_shop'); } catch (e) {}
+    var _priorAllowed = [];
+    var _priorSwitch = '0';
+    try {
+      _priorShop = localStorage.getItem('ps_shop');
+      var _rawPriorAllowed = JSON.parse(localStorage.getItem('ps_allowed_shops') || '[]');
+      _priorAllowed = Array.isArray(_rawPriorAllowed) ? _rawPriorAllowed : [];
+      _priorSwitch = localStorage.getItem('ps_shopwechsel') || '0';
+    } catch (e) {}
     // BUGFIX: 'ps_shop' NICHT mehr blind auf den Heimatshop zurücksetzen –
     // das hat einen manuell (per erlaubtem Shop-Wechsel) gewählten Shop bei
     // jedem Login wieder überschrieben. Der zuletzt gewählte Shop bleibt
@@ -35738,14 +35759,12 @@ function __PS_startAuthGate(startAppFn) {
     try {
       localStorage.setItem('ps_link_agent', (profile && profile.name) || '');
       localStorage.setItem('ps_shop', _effectiveShop);
-      // Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen. Ohne
-      // Freigabe bleibt ein Mitarbeiter auf seinem Heimatshop (shopId)
-      // stationär. Erst ein Eintrag in extraShopIds (vom Administrator im
-      // Dashboard gesetzt, "Weitere Standorte verwalten") gibt zusätzliche
-      // Standorte frei – exakt dieselbe bereits im Admin-Dashboard vorhandene
-      // Logik, hier nur konsumiert.
+      // Shop-Wechsel-Berechtigung aus dem Firestore-Profil übernehmen:
+      // - isSpringer == true: alle Shops sind freigegeben.
+      // - sonst: Heimatshop plus die vom Admin einzeln freigegebenen
+      //   Zusatzstandorte aus extraShopIds.
       localStorage.setItem('ps_allowed_shops', JSON.stringify(_allowed));
-      localStorage.setItem('ps_shopwechsel', _extra.length > 0 ? '1' : '0');
+      localStorage.setItem('ps_shopwechsel', (_springer || _allowed.length > 1) ? '1' : '0');
     } catch (e) {}
     // CURRENT_SHOP_ID (und PS_ALLOWED_SHOP_IDS) sind oben im Skript als
     // const berechnet, BEVOR das Firestore-Profil geladen ist – also aus
@@ -35754,7 +35773,9 @@ function __PS_startAuthGate(startAppFn) {
     // beim allerersten Start, oder wenn eine Freigabe entzogen wurde), hilft
     // ein einmaliger, selbstbeendender Reload – genau wie beim manuellen
     // "Shop wechseln" – damit CURRENT_SHOP_ID neu und korrekt berechnet wird.
-    if (_effectiveShop !== CURRENT_SHOP_ID) {
+    var _newSwitch = (_springer || _allowed.length > 1) ? '1' : '0';
+    var _permissionsChanged = JSON.stringify(_priorAllowed) !== JSON.stringify(_allowed) || _priorSwitch !== _newSwitch;
+    if (_effectiveShop !== CURRENT_SHOP_ID || _permissionsChanged) {
       try {
         var u = new URL(window.location.href);
         u.searchParams.delete('shop');
@@ -35818,6 +35839,7 @@ function __PS_startAuthGate(startAppFn) {
               shopId: '',
               shop: 'Verwaltung / Alle Shops',
               extraShopIds: [],
+              isSpringer: true,
               createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
               updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
             }).catch(function (e) { showFatal(e); });
@@ -35866,6 +35888,7 @@ function __PS_startAuthGate(startAppFn) {
                 shopId: s.shopId,
                 shop: s.shop || '',
                 extraShopIds: Array.isArray(s.extraShopIds) ? s.extraShopIds : [],
+                isSpringer: s.isSpringer === true,
                 isTestUser: s.isTestUser === true,
                 createdAt: window.firebase.firestore.FieldValue.serverTimestamp(),
                 updatedAt: window.firebase.firestore.FieldValue.serverTimestamp()
@@ -35911,6 +35934,33 @@ function __PS_startAuthGate(startAppFn) {
           if (fehltName) {
             if (unsubscribeUserDoc) { try { unsubscribeUserDoc(); } catch (e) {} }
             __psDenyAccess('In deinem Profil fehlt der Name. Bitte wende dich an den Administrator.', false);
+          } else if (appStarted && lastAccessSignature !== accessSignature(d)) {
+            // Hauptshop, Zusatzstandorte oder Springer-Status wurden im Admin
+            // geändert. Die App übernimmt das automatisch und lädt einmal neu.
+            lastAccessSignature = accessSignature(d);
+            var changedHome = d.shopId || 'aalen';
+            var changedSpringer = d.isSpringer === true;
+            var changedExtra = Array.isArray(d.extraShopIds) ? d.extraShopIds : [];
+            var changedAllowed = changedSpringer
+              ? Object.keys(SHOPS)
+              : [changedHome].concat(changedExtra.filter(function (id) { return id !== changedHome && !!SHOPS[id]; }));
+            var currentSaved = null;
+            try { currentSaved = localStorage.getItem('ps_shop'); } catch (e) {}
+            var changedEffective = (currentSaved && changedAllowed.indexOf(currentSaved) !== -1) ? currentSaved : changedHome;
+            try {
+              localStorage.setItem('ps_shop', changedEffective);
+              localStorage.setItem('ps_allowed_shops', JSON.stringify(changedAllowed));
+              localStorage.setItem('ps_shopwechsel', (changedSpringer || changedAllowed.length > 1) ? '1' : '0');
+            } catch (e) {}
+            try {
+              var changedUrl = new URL(window.location.href);
+              changedUrl.searchParams.delete('shop');
+              changedUrl.searchParams.delete('filiale');
+              window.__psIntentionalReload = true;
+              window.location.replace(changedUrl.toString());
+            } catch (e) {
+              window.location.reload();
+            }
           } else {
             startOnce(d);
           }
