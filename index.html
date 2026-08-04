@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!-- ══════════════════════════════════════════════════════════════════════
-         KEIN HTML-CACHE  (v53.7)
+         KEIN HTML-CACHE  (v54.0.3-startfix-audit)
          Android/Chrome hielt diese Datei sonst tagelang im Cache: nach einem
          Update lief auf dem Tablet weiter die ALTE Version, Fehlerkorrekturen
          kamen nie an. Die CDN-Bibliotheken bleiben davon unberührt.
@@ -117,7 +117,9 @@
                                 var scriptUrl = reg.active && reg.active.scriptURL ||
                                                 reg.waiting && reg.waiting.scriptURL ||
                                                 reg.installing && reg.installing.scriptURL || '';
-                                if (/\/sw\.js(?:[?#]|$)/i.test(scriptUrl)) reg.unregister();
+                                var ownSw = new URL('sw.js', window.location.href);
+                                var activeSw = scriptUrl ? new URL(scriptUrl, window.location.href) : null;
+                                if (activeSw && activeSw.origin === ownSw.origin && activeSw.pathname === ownSw.pathname) reg.unregister();
                             } catch (e) {}
                         });
                     }).catch(function () {});
@@ -135,12 +137,12 @@
 
         var manifestLink = document.createElement('link');
         manifestLink.rel = 'manifest';
-        manifestLink.href = 'manifest.webmanifest?v=53.7';
+        manifestLink.href = 'manifest.webmanifest?v=54.0.3';
         document.head.appendChild(manifestLink);
 
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', function () {
-                navigator.serviceWorker.register('sw.js?v=53.7').catch(function (e) {
+                navigator.serviceWorker.register('sw.js?v=54.0.3').catch(function (e) {
                     console.warn('SW-Registrierung fehlgeschlagen:', e);
                 });
             });
@@ -179,7 +181,7 @@
     </script>
 
     <!-- ══════════════════════════════════════════════════════════════════════
-         VERSION + CACHE-BUSTING  (v53.7)
+         VERSION + CACHE-BUSTING  (v54.0.3)
          ──────────────────────────────────────────────────────────────────────
          Android/Chrome hält HTML von GitHub Pages sehr hartnäckig im Cache.
          Ohne diesen Block sieht der Mitarbeiter nach einem Update weiterhin
@@ -187,28 +189,28 @@
          Bei neuer Version: APP_VERSION unten hochsetzen. Fertig.
          ══════════════════════════════════════════════════════════════════════ -->
     <script>
-    window.APP_VERSION = '53.7';
+    window.APP_VERSION = '54.0.3';
     (function(){
         try {
-            var KEY = 'pencil_app_version';
+            var KEY = 'pencil_app_version_o2';
             var last = null;
             try { last = localStorage.getItem(KEY); } catch(e){}
             if (last !== window.APP_VERSION) {
                 try { localStorage.setItem(KEY, window.APP_VERSION); } catch(e){}
-                // Alte Caches (Service Worker / CacheStorage) wegräumen
+                // Nur die o2-Registrierung aktualisieren. Keine fremden
+                // CacheStorage-Einträge derselben Domain löschen (z.B. Telekom-App).
                 try {
-                    if (window.caches && caches.keys) {
-                        caches.keys().then(function(ks){ ks.forEach(function(k){ caches.delete(k); }); });
+                    if ('serviceWorker' in navigator) {
+                        navigator.serviceWorker.getRegistration('./').then(function(reg){
+                            if (reg && typeof reg.update === 'function') reg.update().catch(function(){});
+                        }).catch(function(){});
                     }
                 } catch(e){}
-                // Einmalig mit Versions-Parameter neu laden → frisches HTML vom Server
-                try {
-                    var u = new URL(window.location.href);
-                    if (u.searchParams.get('v') !== window.APP_VERSION) {
-                        u.searchParams.set('v', window.APP_VERSION);
-                        window.location.replace(u.toString());
-                    }
-                } catch(e){}
+                // Kein automatischer location.replace mehr: Ein alter Service Worker
+                // konnte abwechselnd eine alte und die neue HTML-Version liefern und
+                // dadurch eine Reload-/Ladeschleife erzeugen. Die Registrierung wird
+                // oben aktualisiert; die aktuell geladene Datei startet ohne Umweg.
+                try { window.__PS_VERSION_CHANGED = true; } catch(e){}
             }
         } catch(e){}
     })();
@@ -3654,14 +3656,21 @@ html.device-android-tablet .sit-aside-panel {
     <!-- ===== SESSION TRACKING + POWER AUTOMATE ===== -->
     <script>
     (function() {
-        var SESSION_KEY = 'ps_session_v1';
+        var SESSION_KEY = 'ps_session_o2_v1';
+        var LEGACY_SESSION_KEY = 'ps_session_v1';
+        var PENDING_ANALYTICS_KEY = 'pencil_analytics_o2_pending_v1';
+        try {
+            if (!localStorage.getItem(SESSION_KEY) && localStorage.getItem(LEGACY_SESSION_KEY)) {
+                localStorage.setItem(SESSION_KEY, localStorage.getItem(LEGACY_SESSION_KEY));
+            }
+        } catch(e) {}
         var SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2h
 
-        window.psStartSession = function(agent, beratungsId) {
+        window.psStartSession = function(agent, beratungsId, uid) {
             try {
                 var id = Date.now().toString(36) + Math.random().toString(36).slice(2,5);
                 var sessions = JSON.parse(localStorage.getItem(SESSION_KEY) || '[]');
-                sessions.push({id:id, startTs:Date.now(), status:'gestartet', agent:agent, beratungsId:beratungsId||''});
+                sessions.push({id:id, startTs:Date.now(), status:'gestartet', agent:agent, uid:uid||'', beratungsId:beratungsId||''});
                 localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
                 return id;
             } catch(e) { return null; }
@@ -3688,18 +3697,19 @@ html.device-android-tablet .sit-aside-panel {
                     if (s.status === 'gestartet' && age > SESSION_TTL_MS) {
                         // Log as abandoned
                         try {
-                            var rows = JSON.parse(localStorage.getItem('pencil_analytics_v1') || '[]');
+                            var rows = JSON.parse(localStorage.getItem(PENDING_ANALYTICS_KEY) || '[]');
                             rows.push({
                                 id: 'ab_' + s.id,
                                 ts: new Date(s.startTs).toISOString(),
                                 user: s.agent || 'Unbekannt',
+                                userUid: s.uid || '',
                                 shop: CURRENT_SHOP.name, shopId: CURRENT_SHOP.id,
                                 result: 'Abgebrochen',
                                 beratungsId: s.beratungsId || '',
                                 durationMin: Math.round(age / 60000),
                                 canvasStats: {}
                             });
-                            localStorage.setItem('pencil_analytics_v1', JSON.stringify(rows));
+                            localStorage.setItem(PENDING_ANALYTICS_KEY, JSON.stringify(rows.slice(-250)));
                         } catch(e2) {}
                         if (typeof window.psSendToSharePoint === 'function') window.psSendToSharePoint({result:'Abgebrochen', agent:s.agent||'', beratungsId:s.beratungsId||'', durationMin:Math.round(age/60000)});
                     } else if (s.status !== 'abgeschlossen' && age <= SESSION_TTL_MS) {
@@ -3719,7 +3729,7 @@ html.device-android-tablet .sit-aside-panel {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         timestamp: new Date().toISOString(),
-                        shop: payload.shop || 'Telekom',
+                        shop: payload.shop || (CURRENT_SHOP && CURRENT_SHOP.name) || 'o2',
                         agent: payload.agent || '',
                         beratungsId: payload.beratungsId || '',
                         result: payload.result || 'offen',
@@ -4241,21 +4251,60 @@ body.pdf-share-mode .offer-canvas-container:has(.offer-html-overlay-wrap) .offer
         <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
     </div>
     <script>
-        // Hide loading screen once React has rendered
+        // Ladebildschirm zuverlässig entfernen, sobald Login-Gate ODER React
+        // etwas in #root rendert. Die alte Prüfung endete nach ca. 10 Sekunden;
+        // auf langsamen Tablets blieb der Loader danach dauerhaft vor der App.
         (function() {
-            var attempts = 0;
-            function tryHide() {
+            var finished = false;
+            var observer = null;
+            var poll = null;
+            function hideLoader() {
+                if (finished) return true;
                 var root = document.getElementById('root');
                 var loader = document.getElementById('app-loading');
-                if (loader && root && root.children.length > 0) {
+                if (!loader) { finished = true; return true; }
+                if (root && root.children && root.children.length > 0) {
+                    finished = true;
+                    try { if (observer) observer.disconnect(); } catch(e) {}
+                    try { if (poll) clearInterval(poll); } catch(e) {}
                     loader.style.opacity = '0';
-                    loader.style.transition = 'opacity 0.3s';
-                    setTimeout(function(){ if(loader) loader.remove(); }, 350);
-                } else if (attempts++ < 100) {
-                    setTimeout(tryHide, 100);
+                    loader.style.transition = 'opacity 0.25s';
+                    setTimeout(function(){ try { loader.remove(); } catch(e) {} }, 300);
+                    return true;
                 }
+                return false;
             }
-            tryHide();
+            try {
+                var root = document.getElementById('root');
+                if (root && window.MutationObserver) {
+                    observer = new MutationObserver(hideLoader);
+                    observer.observe(root, { childList: true });
+                }
+            } catch(e) {}
+            poll = setInterval(hideLoader, 200);
+            hideLoader();
+
+            // Kein endloser, nichtssagender Spinner: nach 20 Sekunden wird
+            // ein echter Neustart-Knopf angeboten. Sobald #root rendert,
+            // verschwindet der Loader trotzdem automatisch.
+            setTimeout(function() {
+                if (finished) return;
+                var loader = document.getElementById('app-loading');
+                if (!loader) return;
+                var label = loader.querySelector('span');
+                if (label) label.textContent = 'Anmeldung wird noch geprüft …';
+            }, 5000);
+            setTimeout(function() {
+                if (finished) return;
+                var loader = document.getElementById('app-loading');
+                if (!loader) return;
+                loader.innerHTML =
+                    '<div style="max-width:360px;text-align:center;color:white;padding:24px;font-family:system-ui,sans-serif">' +
+                    '<div style="font-size:18px;font-weight:800;margin-bottom:8px">Pencil Selling startet nicht</div>' +
+                    '<div style="font-size:13px;line-height:1.45;color:#cbd5e1;margin-bottom:16px">Die Anmeldung oder eine benötigte Bibliothek antwortet nicht. Bitte einmal neu laden.</div>' +
+                    '<button onclick="location.reload()" style="border:0;border-radius:10px;padding:11px 18px;background:#3DE0FF;color:#000068;font-weight:800;cursor:pointer">Neu laden</button>' +
+                    '</div>';
+            }, 20000);
         })();
     </script>
 
@@ -4304,8 +4353,22 @@ const LINK_EMPLOYEE = (() => {
   }
 })();
 try {
-  window.__LINK_EMPLOYEE = LINK_EMPLOYEE || '';
+  window.__LINK_EMPLOYEE = window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '';
 } catch (e) {}
+
+// v75: Admin-Sonderrechte jetzt an die Firestore-Rolle gekoppelt, nicht
+// mehr fest an den Namen "Diego da Silva". window.__PS_IS_ADMIN wird im
+// Auth-Gate (startOnce) gesetzt, sobald das Profil geladen ist - VOR dem
+// ersten React-Render, deshalb hier synchron abrufbar. Der Namensvergleich
+// bleibt als Sicherheitsnetz zusätzlich bestehen (z.B. falls das Profil aus
+// irgendeinem Grund noch kein role-Feld hat).
+function PS_IS_ADMIN() {
+  // SICHERHEITSFIX: KEIN Namens-Fallback mehr. Ein reiner Namensvergleich
+  // (LINK_EMPLOYEE === 'Diego da Silva') wäre über ?agent=... in der URL
+  // von jedem fälschbar gewesen - zählt nur noch die echte, aus dem
+  // Firestore-Profil geladene Rolle.
+  return typeof window !== 'undefined' && window.__PS_IS_ADMIN === true;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // v53v: SHOP-WECHSEL-BERECHTIGUNG  (?shopwechsel=1)
@@ -4318,21 +4381,14 @@ try {
 // Lesezeichen ohne Parameter weiter funktioniert.
 // ═══════════════════════════════════════════════════════════════
 const LINK_SHOPWECHSEL = (() => {
+  // Der URL-Parameter ist nur noch ein historischer Komfort-Hinweis und
+  // verleiht selbst keinerlei Berechtigung. Die echte Freigabe kommt nach
+  // dem Login ausschließlich aus role/extraShopIds des Firestore-Profils.
   try {
-    const params = new URLSearchParams(window.location.search || '');
-    const roh = params.get('shopwechsel') || params.get('sw') || '';
-    if (roh !== '') {
-      const an = roh === '1' || roh.toLowerCase() === 'true' || roh.toLowerCase() === 'ja';
-      try {
-        localStorage.setItem('ps_shopwechsel', an ? '1' : '0');
-      } catch (_) {}
-      return an;
-    }
-    try {
-      if (localStorage.getItem('ps_shopwechsel') === '1') return true;
-    } catch (_) {}
-  } catch (e) {}
-  return false;
+    return localStorage.getItem('ps_shopwechsel') === '1';
+  } catch (e) {
+    return false;
+  }
 })();
 try {
   window.__LINK_SHOPWECHSEL = LINK_SHOPWECHSEL;
@@ -4423,21 +4479,23 @@ const ICONS = {
 // ===== Pencil Analytics (local + Firebase Sync) =====
 const ANALYTICS_STORAGE_KEY = 'pencil_analytics_v1';
 const STATS_PASSWORD = (() => {
+  // v54.0.2: kein hartcodiertes Fallback-Passwort mehr im Quelltext.
+  // Der eigentliche Zugriffsschutz ist PS_IS_ADMIN() in handleOpenStats().
   try {
-    return localStorage.getItem('ps_stats_pw') || 'telekom2026';
+    return localStorage.getItem('ps_stats_pw') || '';
   } catch (e) {
-    return 'telekom2026';
+    return '';
   }
 })();
 
 // ── Firebase Stats Config (pencil-selling-stats) ──
 const STATS_FB_CONFIG = {
-  apiKey: "AIzaSyCgKvoW6mB_heUkQDpeZMFE-0CQSUFuN0g",
-  authDomain: "pencil-selling-stats-2f86e.firebaseapp.com",
-  projectId: "pencil-selling-stats-2f86e",
-  storageBucket: "pencil-selling-stats-2f86e.firebasestorage.app",
-  messagingSenderId: "166126857606",
-  appId: "1:166126857606:web:0b29898ae53a8c3aaa1007"
+  apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
+  authDomain: "beta-pencil-selling.firebaseapp.com",
+  projectId: "beta-pencil-selling",
+  storageBucket: "beta-pencil-selling.firebasestorage.app",
+  messagingSenderId: "154760755449",
+  appId: "1:154760755449:web:a4a006f738077eb5344a28"
 };
 
 // ── Firebase Stats DB singleton ──
@@ -4640,14 +4698,17 @@ try {
 // users/{uid} – wird beim Login in 'ps_allowed_shops' gespeichert).
 // Diego (Admin) sieht wie bisher immer alle Shops.
 // ═══════════════════════════════════════════════════════════════
-const PS_ALLOWED_SHOP_IDS = (() => {
-  if (LINK_EMPLOYEE === 'Diego da Silva') return Object.keys(SHOPS);
+function PS_GET_ALLOWED_SHOP_IDS() {
+  // Dynamisch auswerten: Die Admin-Rolle wird erst nach dem Laden des
+  // Firestore-Profils gesetzt. Eine einmalig beim Seitenstart berechnete
+  // Konstante würde den Vor-Login-Zustand (kein Admin) dauerhaft festhalten.
+  if (PS_IS_ADMIN()) return Object.keys(SHOPS);
   try {
     const raw = JSON.parse(localStorage.getItem('ps_allowed_shops') || 'null');
     if (Array.isArray(raw) && raw.length) return raw.filter(id => SHOPS[id]);
   } catch (_) {}
   return [CURRENT_SHOP_ID];
-})();
+}
 // v53: Shop-KENNUNG (id), nicht der Ort.
 // Grund: In einer Stadt können mehrere Shops liegen – z.B.
 // "o2 Crailsheim" und "Telekom Crailsheim". Der Ort wäre bei beiden
@@ -4857,8 +4918,12 @@ const cloudSaveOffer = async offer => {
       reason: 'no-db'
     };
     const json = JSON.stringify(offer);
-    const sizeKB = Math.round(json.length * 2 / 1024); // grob (UTF-16)
-    if (json.length > 950000) {
+    // Firestore misst UTF-8-Bytes, nicht JavaScript-Zeichen. Zusätzlich Reserve
+    // für Metadaten/Indexeinträge lassen, damit das 1-MB-Limit nicht erst beim
+    // tatsächlichen Speichern auffällt.
+    const sizeBytes = new Blob([json]).size;
+    const sizeKB = Math.round(sizeBytes / 1024);
+    if (sizeBytes > 850000) {
       // zu groß für ein Firestore-Dokument
       return {
         ok: false,
@@ -4872,6 +4937,9 @@ const cloudSaveOffer = async offer => {
       label: offer.label || '',
       datum: offer.datum || '',
       agent: offer.agent || '',
+      userUid: (window.__PS_USER_UID || ''),
+      shopId: CURRENT_SHOP.id || CURRENT_SHOP_ID,
+      shop: CURRENT_SHOP.name || '',
       kunde: offer.textData && (offer.textData.Kundenname || offer.textData.CustomerName) || offer.label || '',
       payload: json,
       // komplettes Angebot als JSON-String
@@ -4894,32 +4962,41 @@ const cloudListOffers = async () => {
   try {
     const db = getStatsDb();
     if (!db) return null;
-    const snap = await db.collection('saved_offers').get();
+    const currentSnap = await db.collection('saved_offers').where('shopId', '==', CURRENT_SHOP.id || CURRENT_SHOP_ID).get();
+    // Altangebote aus der Zeit vor shopId/userUid bleiben für Admins auffindbar.
+    // Normale Mitarbeiter laden weiterhin ausschließlich ihren freigegebenen Shop.
+    const snaps = [currentSnap];
+    if (PS_IS_ADMIN()) {
+      try { snaps.push(await db.collection('saved_offers').get()); } catch (_) {}
+    }
     const now = Date.now();
-    const out = [];
+    const outById = new Map();
     const expired = [];
-    snap.forEach(doc => {
+    snaps.forEach(snap => snap.forEach(doc => {
       const d = doc.data();
       if (!d) return;
+      // Beim Admin-Zusatzlauf nur echte Altbestände ohne Shopzuordnung ergänzen.
+      if (snap !== currentSnap && d.shopId) return;
       if (d.ts && now - d.ts > CLOUD_OFFER_MAX_AGE_MS) {
         expired.push(doc.id);
         return;
       }
-      out.push({
+      outById.set(doc.id, {
         id: d.id,
         ts: d.ts,
-        label: d.label,
+        label: String(d.label || d.kunde || 'Angebot') + (!d.shopId ? ' · Altbestand' : ''),
         datum: d.datum,
         agent: d.agent,
-        kunde: d.kunde
+        kunde: d.kunde,
+        legacyWithoutShop: !d.shopId
       });
-    });
-    // abgelaufene aufräumen (fire & forget)
-    expired.forEach(id => {
-      try {
-        db.collection('saved_offers').doc(id).delete();
-      } catch (_) {}
-    });
+    }));
+    const out = Array.from(outById.values());
+    // Abgelaufene Einträge zuverlässig aufräumen; Fehler einzelner
+    // Dokumente dürfen die Liste nicht blockieren.
+    if (expired.length) {
+      await Promise.allSettled(expired.map(id => db.collection('saved_offers').doc(id).delete()));
+    }
     return out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   } catch (e) {
     console.warn('cloudListOffers:', e);
@@ -4954,27 +5031,196 @@ const cloudDeleteOffer = async id => {
 
 // ── Push einzelne Zeile zu Firebase (fire & forget) ──
 
+const ANALYTICS_PENDING_LEGACY_KEY = 'pencil_analytics_o2_pending_v1';
+const ANALYTICS_PENDING_PREFIX = 'pencil_analytics_o2_pending_v2_';
+const analyticsPendingKey = uid => ANALYTICS_PENDING_PREFIX + String(uid || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_');
+const readPendingAnalytics = key => {
+  try {
+    const rows = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(rows) ? rows : [];
+  } catch (_) {
+    return [];
+  }
+};
+const writePendingAnalytics = (key, rows) => {
+  try {
+    if (rows && rows.length) localStorage.setItem(key, JSON.stringify(rows.slice(-500)));
+    else localStorage.removeItem(key);
+  } catch (_) {}
+};
 const pushRowToFirebase = async row => {
+  const currentUid = String(window.__PS_USER_UID || '').trim();
+  const currentName = String(window.__PS_PROFILE_NAME || '').trim();
+  const existingOwnerUid = String(row && row.userUid || '').trim();
+  const normalized = {
+    ...row,
+    id: String(row.id || ('analytics_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9))),
+    // Neue Zeilen werden immer dem echten Firebase-Profil zugeordnet. Bereits
+    // gepufferte Zeilen behalten dagegen ihren ursprünglichen Eigentümer.
+    user: String(existingOwnerUid ? (row.user || '–') : (currentName || row.user || '–')),
+    userUid: String(existingOwnerUid || currentUid || ''),
+    shop: existingOwnerUid ? (row.shop || CURRENT_SHOP.name) : CURRENT_SHOP.name,
+    shopId: existingOwnerUid ? (row.shopId || CURRENT_SHOP.id) : CURRENT_SHOP.id,
+    ts: row.ts || new Date().toISOString(),
+    syncedAt: Date.now()
+  };
   try {
     const db = getStatsDb();
-    if (!db) return;
-    await db.collection('analytics').doc(row.id).set({
-      ...row,
-      ts: row.ts,
-      syncedAt: Date.now()
-    });
+    if (!db) throw new Error('Keine Firebase-Verbindung');
+    if (!normalized.userUid) throw new Error('Keine Benutzer-UID');
+    await db.collection('analytics').doc(normalized.id).set(normalized);
+    return true;
   } catch (e) {
     console.warn('Firebase push failed:', e);
+    const key = analyticsPendingKey(normalized.userUid || currentUid);
+    const pending = readPendingAnalytics(key);
+    if (!pending.some(x => x && x.id === normalized.id)) pending.push(normalized);
+    writePendingAnalytics(key, pending);
+    return false;
   }
 };
 
-// ── Alle Zeilen von Firebase laden (für Admin) ──
-const loadRowsFromFirebase = async () => {
+const flushPendingAnalyticsRows = async () => {
+  const currentUid = String(window.__PS_USER_UID || '').trim();
+  const currentName = String(window.__PS_PROFILE_NAME || '').trim();
+  if (!currentUid) return;
+
+  // Einmalige sichere Übernahme des alten gemeinsamen Puffers: nur eindeutig
+  // diesem aktuell angemeldeten Nutzer gehörende Zeilen übernehmen.
+  const legacy = readPendingAnalytics(ANALYTICS_PENDING_LEGACY_KEY);
+  if (legacy.length) {
+    const own = [];
+    const foreign = [];
+    legacy.forEach(row => {
+      const rowUid = String(row && row.userUid || '').trim();
+      const rowName = String(row && row.user || '').trim();
+      if (rowUid === currentUid || (!rowUid && rowName && rowName === currentName)) {
+        own.push({ ...row, userUid: currentUid, user: rowName || currentName });
+      } else {
+        foreign.push(row);
+      }
+    });
+    if (own.length) {
+      const key = analyticsPendingKey(currentUid);
+      const existing = readPendingAnalytics(key);
+      own.forEach(row => { if (!existing.some(x => x && x.id === row.id)) existing.push(row); });
+      writePendingAnalytics(key, existing);
+    }
+    writePendingAnalytics(ANALYTICS_PENDING_LEGACY_KEY, foreign);
+  }
+
+  const key = analyticsPendingKey(currentUid);
+  const pending = readPendingAnalytics(key);
+  if (!pending.length) return;
+  const remaining = [];
+  const db = getStatsDb();
+  if (!db) return;
+  for (const row of pending) {
+    try {
+      // Nur eigene Zeilen senden. Fremde oder unklare Zeilen bleiben sicher liegen.
+      if (String(row && row.userUid || '') !== currentUid) {
+        remaining.push(row);
+        continue;
+      }
+      const normalized = {
+        ...row,
+        user: String(row.user || currentName || '–'),
+        userUid: currentUid,
+        shop: row.shop || CURRENT_SHOP.name,
+        shopId: row.shopId || CURRENT_SHOP.id,
+        syncedAt: Date.now()
+      };
+      await db.collection('analytics').doc(normalized.id).set(normalized);
+    } catch (_) {
+      remaining.push(row);
+    }
+  }
+  writePendingAnalytics(key, remaining);
+};
+setTimeout(() => { flushPendingAnalyticsRows().catch(() => {}); }, 2500);
+window.addEventListener('online', () => { flushPendingAnalyticsRows().catch(() => {}); });
+
+// ── Alte Statistikzeilen einmalig von Namen auf Firebase-UID migrieren ──
+const migrateLegacyAnalyticsUids = async (db, analyticsDocs) => {
+  if (!PS_IS_ADMIN() || !db || !Array.isArray(analyticsDocs)) return;
+  const legacy = analyticsDocs.filter(d => {
+    const data = d && d.data ? d.data() : null;
+    return data && !data.userUid && typeof data.user === 'string' && data.user.trim() && data.user !== '–';
+  });
+  if (!legacy.length) return;
+  try {
+    const usersSnap = await db.collection('users').get();
+    const byName = new Map();
+    usersSnap.docs.forEach(doc => {
+      const data = doc.data() || {};
+      const name = String(data.name || '').trim();
+      if (!name) return;
+      const list = byName.get(name) || [];
+      list.push(doc.id);
+      byName.set(name, list);
+    });
+    const migratable = legacy.filter(doc => {
+      const ids = byName.get(String(doc.data().user || '').trim()) || [];
+      return ids.length === 1;
+    });
+    for (let i = 0; i < migratable.length; i += 400) {
+      const batch = db.batch();
+      migratable.slice(i, i + 400).forEach(doc => {
+        const ids = byName.get(String(doc.data().user || '').trim()) || [];
+        if (ids.length === 1) batch.update(doc.ref, { userUid: ids[0] });
+      });
+      await batch.commit();
+    }
+  } catch (e) {
+    console.warn('Analytics-UID-Migration übersprungen:', e);
+  }
+};
+
+// ── Alle Zeilen von Firebase laden ──
+const loadRowsFromFirebase = async (nurEigeneVon) => {
   try {
     const db = getStatsDb();
     if (!db) return null;
-    const snap = await db.collection('analytics').orderBy('ts', 'desc').limit(2000).get();
-    return snap.docs.map(d => d.data());
+
+    const collectPages = async baseQuery => {
+      const docs = [];
+      let last = null;
+      while (true) {
+        let q = baseQuery;
+        if (last) q = q.startAfter(last);
+        const snap = await q.limit(500).get();
+        const page = snap.docs || [];
+        docs.push(...page);
+        if (page.length < 500) break;
+        last = page[page.length - 1];
+        // Sicherheitsgrenze gegen eine versehentliche Endlosschleife.
+        if (docs.length > 100000) throw new Error('Zu viele Statistikdatensätze');
+      }
+      return docs;
+    };
+
+    if (!nurEigeneVon) {
+      const docs = await collectPages(db.collection('analytics').orderBy('ts', 'desc'));
+      await migrateLegacyAnalyticsUids(db, docs);
+      return docs.map(d => d.data());
+    }
+
+    const uid = String(window.__PS_USER_UID || '').trim();
+    if (!uid) return [];
+    let docs;
+    try {
+      // Dokument-ID als stabile Paginierung; danach lokal nach Zeit sortieren.
+      docs = await collectPages(db.collection('analytics')
+        .where('userUid', '==', uid)
+        .orderBy(window.firebase.firestore.FieldPath.documentId()));
+    } catch (e) {
+      // Falls ein Browser/SDK diese Kombination nicht unterstützt, lieber
+      // vollständig ohne Pagination laden als still Datensätze abzuschneiden.
+      const snap = await db.collection('analytics').where('userUid', '==', uid).get();
+      docs = snap.docs || [];
+    }
+    return docs.map(d => d.data())
+      .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')));
   } catch (e) {
     console.warn('Firebase load failed:', e);
     return null;
@@ -4988,14 +5234,22 @@ const loadAnalyticsRows = () => {
 const saveAnalyticsRows = rows => {}; // Deaktiviert – nur Firebase
 const clearAnalyticsRows = async () => {
   try {
+    if (!PS_IS_ADMIN()) throw new Error('Nur Administratoren dürfen Analytics löschen.');
     const db = getStatsDb();
-    if (!db) return;
+    if (!db) return false;
     const snap = await db.collection('analytics').get();
-    const batch = db.batch();
-    snap.docs.forEach(d => batch.delete(d.ref));
-    await batch.commit();
+    const docs = snap.docs || [];
+    // Firestore erlaubt höchstens 500 Schreiboperationen pro Batch.
+    // 400 lässt Reserve und funktioniert auch bei mehreren tausend Datensätzen.
+    for (let i = 0; i < docs.length; i += 400) {
+      const batch = db.batch();
+      docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    return true;
   } catch (e) {
     console.warn('Firebase clear failed:', e);
+    return false;
   }
 };
 
@@ -11030,7 +11284,7 @@ const AdminModal = ({
     className: "w-full border border-green-300 p-2 rounded text-sm focus:ring-2 focus:ring-green-200 outline-none text-slate-600"
   }), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] text-slate-400 mt-1"
-  }, "Power Automate: When an HTTP request is received. Jeden Abschluss automatisch an SharePoint senden.")), /*#__PURE__*/React.createElement("div", {
+  }, "Power Automate: When an HTTP request is received. Jeden Abschluss automatisch an SharePoint senden.")), false && /*#__PURE__*/React.createElement("div", {
     className: "border border-slate-200 rounded-lg p-4 bg-white shadow-sm mb-4"
   }, /*#__PURE__*/React.createElement("h4", {
     className: "font-bold text-slate-700 mb-2 text-sm flex items-center gap-2"
@@ -13184,10 +13438,11 @@ const PinLockModal = ({
   }, [locked]);
   if (!isOpen) return null;
   const getStoredPw = () => {
+    // v54.0.2: kein hartcodiertes Fallback-Passwort mehr.
     try {
-      return localStorage.getItem('ps_stats_pw') || 'telekom2026';
+      return localStorage.getItem('ps_stats_pw') || '';
     } catch (e) {
-      return 'telekom2026';
+      return '';
     }
   };
   const handleSubmit = () => {
@@ -13384,7 +13639,7 @@ const StatsModal = ({
   const [activeTab, setActiveTab] = useState(employeeMode ? 'coaching' : 'uebersicht');
   const [skipAgentsData, setSkipAgentsData] = useState({}); // { agentName: {count, limit} }
   const [range, setRange] = useState('31');
-  const isDiegoAdmin = !employeeMode && LINK_EMPLOYEE === 'Diego da Silva';
+  const isDiegoAdmin = !employeeMode && PS_IS_ADMIN();
 
   // Im Mitarbeiter-Modus IMMER auf den eigenen Namen gesperrt
   useEffect(() => {
@@ -13393,7 +13648,7 @@ const StatsModal = ({
   useEffect(() => {
     if (!isOpen) return;
     setFbLoading(true);
-    loadRowsFromFirebase().then(data => {
+    loadRowsFromFirebase(employeeMode ? (lockedAgent || LINK_EMPLOYEE) : null).then(data => {
       setFbRows(data);
       setFbLoading(false);
     });
@@ -16826,11 +17081,73 @@ const OfferValidityModal = ({
 // Kein manuelles PDF-in-Ordner-schieben mehr. Ein Tipp = gespeichert.
 // IndexedDB: persistent, groß genug für Handschrift-Daten, offline-fähig.
 // ═══════════════════════════════════════════════════════════════
-const OFFER_DB_NAME = 'PencilSellingOffers';
+const OFFER_DB_NAME = 'PencilSellingOffers_o2';
+const OFFER_DB_NAME_LEGACY = 'PencilSellingOffers'; // v54.0.3: alter, nicht markenspezifischer Name
 const OFFER_STORE = 'offers';
 const OFFER_DB_VERSION = 1;
+let _offerDbMigratedFlag = false;
+function _migrateLegacyOfferDbOnce() {
+  // v54.0.3: einmalige, rein additive Migration von der alten (potenziell mit
+  // Telekom geteilten) DB in eine o2-spezifische DB. Die alte DB wird NICHT
+  // geloescht - falls hier etwas schiefgeht, gehen keine Daten verloren.
+  if (_offerDbMigratedFlag) return Promise.resolve();
+  _offerDbMigratedFlag = true;
+  return new Promise(resolve => {
+    let already = false;
+    try { already = localStorage.getItem('ps_o2_offerdb_migrated_v1') === '1'; } catch (_) {}
+    if (already) { resolve(); return; }
+    try {
+      const reqOld = indexedDB.open(OFFER_DB_NAME_LEGACY);
+      reqOld.onerror = () => resolve();
+      reqOld.onsuccess = () => {
+        const oldDb = reqOld.result;
+        if (!oldDb.objectStoreNames.contains(OFFER_STORE)) {
+          try { oldDb.close(); } catch (_) {}
+          resolve();
+          return;
+        }
+        try {
+          const txOld = oldDb.transaction(OFFER_STORE, 'readonly');
+          const allReq = txOld.objectStore(OFFER_STORE).getAll();
+          allReq.onsuccess = () => {
+            const rows = (allReq.result || []).filter(o => !o.appBrand || o.appBrand === 'o2');
+            try { oldDb.close(); } catch (_) {}
+            if (rows.length === 0) {
+              try { localStorage.setItem('ps_o2_offerdb_migrated_v1', '1'); } catch (_) {}
+              resolve();
+              return;
+            }
+            const reqNew = indexedDB.open(OFFER_DB_NAME, OFFER_DB_VERSION);
+            reqNew.onupgradeneeded = e => {
+              const db = e.target.result;
+              if (!db.objectStoreNames.contains(OFFER_STORE)) {
+                db.createObjectStore(OFFER_STORE, { keyPath: 'id' });
+              }
+            };
+            reqNew.onsuccess = () => {
+              const newDb = reqNew.result;
+              try {
+                const txNew = newDb.transaction(OFFER_STORE, 'readwrite');
+                const store = txNew.objectStore(OFFER_STORE);
+                rows.forEach(r => store.put(r));
+                txNew.oncomplete = () => {
+                  try { newDb.close(); } catch (_) {}
+                  try { localStorage.setItem('ps_o2_offerdb_migrated_v1', '1'); } catch (_) {}
+                  resolve();
+                };
+                txNew.onerror = () => resolve();
+              } catch (_) { resolve(); }
+            };
+            reqNew.onerror = () => resolve();
+          };
+          allReq.onerror = () => { try { oldDb.close(); } catch (_) {} resolve(); };
+        } catch (_) { resolve(); }
+      };
+    } catch (_) { resolve(); }
+  });
+}
 function openOfferDB() {
-  return new Promise((resolve, reject) => {
+  return _migrateLegacyOfferDbOnce().then(() => new Promise((resolve, reject) => {
     const req = indexedDB.open(OFFER_DB_NAME, OFFER_DB_VERSION);
     req.onupgradeneeded = e => {
       const db = e.target.result;
@@ -16842,10 +17159,11 @@ function openOfferDB() {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
-  });
+  }));
 }
 async function saveOffer(offer) {
   try {
+    offer = { ...offer, appBrand: 'o2' };
     const db = await openOfferDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(OFFER_STORE, 'readwrite');
@@ -16874,6 +17192,9 @@ async function listOffers() {
     const fresh = [];
     const expired = [];
     for (const o of all) {
+      // Neue Einträge sind eindeutig o2. Legacy ohne Kennzeichnung werden
+      // weiterhin angezeigt, damit bestehende Angebote nicht verloren gehen.
+      if (o && o.appBrand && o.appBrand !== 'o2') continue;
       if (o.ts && now - o.ts > OFFER_MAX_AGE_MS) expired.push(o.id);else fresh.push(o);
     }
     if (expired.length > 0) {
@@ -16912,13 +17233,74 @@ async function deleteOffer(id) {
 // da ist, ruft man es ab und verschickt es dann korrekt archiviert.
 // Eigener IndexedDB-Store, gleiche Technik wie die Angebots-Speicherung.
 // ═══════════════════════════════════════════════════════════════
-const PARK_DB_NAME = 'PencilSellingParked';
+const PARK_DB_NAME = 'PencilSellingParked_o2';
+const PARK_DB_NAME_LEGACY = 'PencilSellingParked'; // v54.0.3: alter, nicht markenspezifischer Name
 const PARK_STORE = 'parked';
 const PARK_DB_VERSION = 1;
 const PARK_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 Stunden
 
+let _parkDbMigratedFlag = false;
+function _migrateLegacyParkDbOnce() {
+  // v54.0.3: gleiches additive Migrationsmuster wie bei der Angebots-DB.
+  if (_parkDbMigratedFlag) return Promise.resolve();
+  _parkDbMigratedFlag = true;
+  return new Promise(resolve => {
+    let already = false;
+    try { already = localStorage.getItem('ps_o2_parkdb_migrated_v1') === '1'; } catch (_) {}
+    if (already) { resolve(); return; }
+    try {
+      const reqOld = indexedDB.open(PARK_DB_NAME_LEGACY);
+      reqOld.onerror = () => resolve();
+      reqOld.onsuccess = () => {
+        const oldDb = reqOld.result;
+        if (!oldDb.objectStoreNames.contains(PARK_STORE)) {
+          try { oldDb.close(); } catch (_) {}
+          resolve();
+          return;
+        }
+        try {
+          const txOld = oldDb.transaction(PARK_STORE, 'readonly');
+          const allReq = txOld.objectStore(PARK_STORE).getAll();
+          allReq.onsuccess = () => {
+            const rows = (allReq.result || []).filter(o => !o.appBrand || o.appBrand === 'o2');
+            try { oldDb.close(); } catch (_) {}
+            if (rows.length === 0) {
+              try { localStorage.setItem('ps_o2_parkdb_migrated_v1', '1'); } catch (_) {}
+              resolve();
+              return;
+            }
+            const reqNew = indexedDB.open(PARK_DB_NAME, PARK_DB_VERSION);
+            reqNew.onupgradeneeded = e => {
+              const db = e.target.result;
+              if (!db.objectStoreNames.contains(PARK_STORE)) {
+                db.createObjectStore(PARK_STORE, { keyPath: 'id' });
+              }
+            };
+            reqNew.onsuccess = () => {
+              const newDb = reqNew.result;
+              try {
+                const txNew = newDb.transaction(PARK_STORE, 'readwrite');
+                const store = txNew.objectStore(PARK_STORE);
+                rows.forEach(r => store.put(r));
+                txNew.oncomplete = () => {
+                  try { newDb.close(); } catch (_) {}
+                  try { localStorage.setItem('ps_o2_parkdb_migrated_v1', '1'); } catch (_) {}
+                  resolve();
+                };
+                txNew.onerror = () => resolve();
+              } catch (_) { resolve(); }
+            };
+            reqNew.onerror = () => resolve();
+          };
+          allReq.onerror = () => { try { oldDb.close(); } catch (_) {} resolve(); };
+        } catch (_) { resolve(); }
+      };
+    } catch (_) { resolve(); }
+  });
+}
+
 function openParkDB() {
-  return new Promise((resolve, reject) => {
+  return _migrateLegacyParkDbOnce().then(() => new Promise((resolve, reject) => {
     const req = indexedDB.open(PARK_DB_NAME, PARK_DB_VERSION);
     req.onupgradeneeded = e => {
       const db = e.target.result;
@@ -16930,11 +17312,12 @@ function openParkDB() {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
-  });
+  }));
 }
 async function parkArchiveEntry(entry) {
   // entry: { id, ts, type, agent, datum, kunde, pdfBlob }
   try {
+    entry = { ...entry, appBrand: 'o2' };
     const db = await openParkDB();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(PARK_STORE, 'readwrite');
@@ -16960,6 +17343,7 @@ async function listParkedArchive() {
     const fresh = [];
     const expired = [];
     for (const o of all) {
+      if (o && o.appBrand && o.appBrand !== 'o2') continue;
       if (o.ts && now - o.ts > PARK_MAX_AGE_MS) expired.push(o.id);else fresh.push(o);
     }
     if (expired.length > 0) {
@@ -18318,6 +18702,13 @@ const PdfFinalizeModal = ({
 };
 function App() {
   const [view, setView] = useState('situation');
+  // Einmalige Trennung vom Telekom-Browserspeicher. Vorhandene o2-Daten
+  // werden übernommen, ohne sie zu verlieren.
+  try {
+    if (!localStorage.getItem('ps_o2_admin_archive') && localStorage.getItem('ps_admin_archive')) {
+      localStorage.setItem('ps_o2_admin_archive', localStorage.getItem('ps_admin_archive'));
+    }
+  } catch (e) {}
   const [showArchivPopup, setShowArchivPopup] = useState(false);
   const [darkMode, setDarkMode] = useState(false); // Darkmode-Umschalter ausgeblendet – immer hell
   useEffect(() => {
@@ -18345,7 +18736,7 @@ function App() {
   // === Mitarbeiter-Link-System (Variante A) ===
   // LINK_EMPLOYEE ist global definiert, damit Admin/Stats außerhalb von App() nicht crashen.
   try {
-    window.__LINK_EMPLOYEE = LINK_EMPLOYEE || '';
+    window.__LINK_EMPLOYEE = window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '';
   } catch (e) {}
   const [drawnStrokes, setDrawnStrokes] = useState({
     // Legacy (früher: ein großes Overlay-Canvas über allen Zeilen)
@@ -18435,6 +18826,8 @@ function App() {
   window.__appErrors = window.__appErrors || [];
   window.__appWarnings = window.__appWarnings || [];
   (function () {
+    if (window.__psConsoleWrapped) return;
+    window.__psConsoleWrapped = true;
     const _origError = console.error.bind(console);
     const _origWarn = console.warn.bind(console);
     console.error = function (...args) {
@@ -18849,7 +19242,11 @@ function App() {
     setShowBundleModal(true);
   }, [BUNDLE_URL]);
   const handleOpenStats = () => {
-    setShowPinLock(true);
+    if (!PS_IS_ADMIN()) {
+      triggerToast('Kein Administrator-Zugriff.');
+      return;
+    }
+    setShowStats(true);
   };
   const dprRef = useRef(window.devicePixelRatio || 1);
   const [textSize, setTextSize] = useState('medium');
@@ -18858,7 +19255,7 @@ function App() {
     italic: false
   });
   const [textData, setTextData] = useState({
-    AgentName: LINK_EMPLOYEE || '',
+    AgentName: (window.__PS_PROFILE_NAME || LINK_EMPLOYEE || ''),
     DateValue: new Date().toLocaleDateString('de-DE', {
       day: '2-digit',
       month: '2-digit',
@@ -18896,11 +19293,11 @@ function App() {
     }
     return translation || defaultText;
   }, [textData, translatedText, displayLanguage]);
-  const triggerToast = message => {
+  const triggerToast = useCallback(message => {
     clearTimeout(toastTimerRef.current);
     setToastMessage(message);
     toastTimerRef.current = setTimeout(() => setToastMessage(null), 3000);
-  };
+  }, []);
   const [emailText, setEmailText] = useState('');
   const [emailMode, setEmailMode] = useState('keyboard');
   const [showEmailKeyboard, setShowEmailKeyboard] = useState(false);
@@ -18962,14 +19359,15 @@ function App() {
   // Läuft bei jedem Render-relevanten Wechsel – idempotent (setzt nur bei Bedarf).
   React.useEffect(() => {
     try {
-      if (!LINK_EMPLOYEE) return; // ohne Link-Agent nichts erzwingen
+      const guaranteedAgent = String(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '').trim();
+      if (!guaranteedAgent) return;
       const cur = textData && textData.AgentName ? String(textData.AgentName).trim() : '';
-      // Nur setzen, wenn das Feld LEER ist → manuelle Eingaben (z.B. Vertretung)
-      // bleiben erhalten, aber der häufige Fall "Feld leer trotz Link" ist gelöst.
+      // Beim ersten Login ist LINK_EMPLOYEE noch leer, das Firestore-Profil aber
+      // bereits geladen. Deshalb auch __PS_PROFILE_NAME berücksichtigen.
       if (cur === '') {
         setTextData(prev => ({
           ...prev,
-          AgentName: LINK_EMPLOYEE
+          AgentName: guaranteedAgent
         }));
       }
     } catch (_) {}
@@ -19128,7 +19526,12 @@ function App() {
   const pendingPostSignature = React.useRef(null); // Funktion die nach Folgetermin läuft
   const [showValidityModal, setShowValidityModal] = useState(false);
   const pendingPrintRef = useRef(null);
-  const archiveSentRef = useRef(false); // verhindert doppeltes Auto-Archivieren pro Vorgang
+  const archiveSentRef = useRef(false); // wurde erfolgreich archiviert/geparkt
+  const archiveInFlightRef = useRef(false); // verhindert Doppel-Tipps während der Übertragung
+  const analyticsLoggedRef = useRef(false); // pro Beratung exakt ein Statistik-Datensatz
+  const analyticsRowIdRef = useRef(null); // gleiche Beratung wird aktualisiert statt doppelt angelegt
+  const cloudSaveInFlightRef = useRef(null); // verhindert parallele Cloud-Duplikate
+  const cloudSaveIdRef = useRef(null);
   // v53p: Merkt sich, dass der Verkaeufer im Fertigstellen-Fenster
   // bewusst "Vertrag Parken" gewaehlt hat. Dann wird nach der
   // Unterschrift NICHT nach der Rufnummer gefragt, sondern direkt
@@ -19588,14 +19991,13 @@ function App() {
     try {
       const db = getStatsDb();
       const docId = `skip_${agentName}_${getMonthKey()}`;
-      const doc = await db.collection('skip_limits').doc(docId).get();
-      const current = doc.exists ? doc.data().count || 0 : 0;
       await db.collection('skip_limits').doc(docId).set({
         agent: agentName,
+        userUid: window.__PS_USER_UID || '',
         month: getMonthKey(),
-        count: current + 1,
+        count: firebase.firestore.FieldValue.increment(1),
         ts: new Date().toISOString()
-      });
+      }, { merge: true });
     } catch (e) {
       console.error('incrementSkipCount:', e);
     }
@@ -19646,7 +20048,7 @@ function App() {
   React.useEffect(() => {
     (async () => {
       try {
-        setIsExemptEmployee(await getSkipExempt(LINK_EMPLOYEE || 'Unbekannt'));
+        setIsExemptEmployee(await getSkipExempt(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || 'Unbekannt'));
       } catch (e) {}
     })();
   }, []);
@@ -19875,8 +20277,9 @@ function App() {
       const _betreff = buildArchivBetreff('abschluss', _datum, _ruf, _agent);
       // ⚠️ GESPERRT: PENCIL_-Präfix (siehe buildArchivDateiname)
       const _name = buildArchivDateiname('abschluss', _datum, _ruf);
+      const result = await dispatchArchiveMail(blob, _name, _betreff);
+      if (!result || result.ok !== true) throw (result && result.error) || new Error('Archivierung nicht abgeschlossen.');
       setShowPdfFinalize(false);
-      await dispatchArchiveMail(blob, _name, _betreff);
     } catch (e) {
       console.warn('PDF-Finalisieren fehlgeschlagen:', e);
       triggerToast('⚠️ PDF konnte nicht verarbeitet werden: ' + (e && e.message ? e.message : 'Unbekannt'));
@@ -19918,6 +20321,8 @@ function App() {
     return {
       id,
       ts: Date.now(),
+      appBrand: 'o2',
+      appVersion: window.APP_VERSION || '',
       label,
       datum,
       agent: agentName,
@@ -19945,16 +20350,23 @@ function App() {
         ...costState
       },
       packagePrices: JSON.parse(JSON.stringify(packagePrices)),
+      canvasStatus: JSON.parse(JSON.stringify(canvasStatus)),
       showSecondYear,
       gutschriftBetrag,
+      gutschriftManuell,
+      gutschriftRateManuell,
       showSavingsBlock,
+      dismissSavingsHint,
       showCostSection,
+      skipReason,
+      skipReasonMode,
       checkedTechs: {
         ...checkedTechs
       },
       techUebernommen: [...techUebernommen],
       netBundleMatched,
       wlanSnapshot,
+      tvSnapshot,
       wlanRecommendation,
       speedRecommendation,
       followUpsByKey: JSON.parse(JSON.stringify(followUpsByKey)),
@@ -19965,101 +20377,182 @@ function App() {
       sitLayoutMode,
       offerLayoutMode
     };
-  }, [textData, drawnStrokes, emailText, beratungsId, view, customerType, providerSelect, customProvider, isCustomProvider, segment, canvasImages, canvasHtml, imageTransform, offerData, costState, packagePrices, showSecondYear, gutschriftBetrag, showSavingsBlock, showCostSection, checkedTechs, techUebernommen, netBundleMatched, wlanSnapshot, wlanRecommendation, speedRecommendation, followUpsByKey, customerSignature, displayLanguage, translatedText, staticTranslations, sitLayoutMode, offerLayoutMode]);
+  }, [textData, drawnStrokes, emailText, beratungsId, view, customerType, providerSelect, customProvider, isCustomProvider, segment, canvasImages, canvasHtml, imageTransform, offerData, costState, packagePrices, canvasStatus, showSecondYear, gutschriftBetrag, gutschriftManuell, gutschriftRateManuell, showSavingsBlock, dismissSavingsHint, showCostSection, skipReason, skipReasonMode, checkedTechs, techUebernommen, netBundleMatched, wlanSnapshot, tvSnapshot, wlanRecommendation, speedRecommendation, followUpsByKey, customerSignature, displayLanguage, translatedText, staticTranslations, sitLayoutMode, offerLayoutMode]);
+
+  // Zentraler neutraler Kundenzustand. Wird sowohl beim echten Reset als
+  // auch VOR dem Laden älterer Angebote verwendet, damit niemals Reste des
+  // vorherigen Kunden in einen neuen Vorgang gelangen.
+  const resetCustomerState = useCallback((opts = {}) => {
+    const keepView = !!opts.keepView;
+    const keepOfferLinks = !!opts.keepOfferLinks;
+    const agentName = String(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '').trim();
+    const today = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+    if (!keepView) setView('situation');
+    setTextData({
+      AgentName: agentName,
+      DateValue: today,
+      OfferValidUntil: '',
+      offer1: '', offer2: '', offer3: '',
+      Kundenname: '', Rufnummer: '', Anbieter: '', Hardware: '', Nutzung: '',
+      Haushalt: '', 'Weitere Produkte': '', Fernsehen: '', WiFi: '', Gesamtkosten: ''
+    });
+    setDrawnStrokes({
+      main: [], email: [], beratungs_id: [], provider: [], notes: [], skip_reason: [],
+      sit_Kundenname: [], sit_Rufnummer: [], sit_Anbieter: [], sit_Hardware: [],
+      sit_Nutzung: [], sit_Haushalt: [], sit_WeitereProdukte: [], sit_Fernsehen: [],
+      sit_WiFi: [], sit_Gesamtkosten: [], offer1: [], offer2: [], offer3: [],
+      cost_einmalig: [], cost_monatlich1: [], cost_monatlich2: [], cost_smartphone: [],
+      agent_name: [], date_field: [], offer_valid_until: []
+    });
+    setEmailText('');
+    setBeratungsId('');
+    setCustomerType('');
+    setSegment('');
+    setSegmentTouched(false);
+    setProviderSelect('');
+    setCustomProvider('');
+    setIsCustomProvider(false);
+    setWlanRecommendation('');
+    setSpeedRecommendation('');
+    setSkipReason('');
+    setSkipReasonMode('keyboard');
+    setCostState({ mobile: '', landline: '', tv: '' });
+    setOfferData({ ...initialOfferData });
+    setPackagePrices({
+      offer1: { einmalig: '', monatlich: '' },
+      offer2: { einmalig: '', monatlich: '' },
+      offer3: { einmalig: '', monatlich: '' }
+    });
+    setShowSecondYear(false);
+    setShowGutschriftRechner(false);
+    setGutschriftBetrag('240');
+    setGutschriftManuell(false);
+    setGutschriftRateManuell('');
+    setShowSavingsBlock(false);
+    setDismissSavingsHint(false);
+    setShowCostSection(true);
+    setCanvasStatus({ offer1: 'neutral', offer2: 'neutral', offer3: 'neutral' });
+    canvasStatusSyncRef.current = { offer1: 'neutral', offer2: 'neutral', offer3: 'neutral' };
+    try { window.__offerCanvasStatusSync = canvasStatusSyncRef.current; } catch (_) {}
+    setCustomerSignature(null);
+    setCanvasImages({ offer1: null, offer2: null, offer3: null });
+    setCanvasHtml({ offer1: null, offer2: null, offer3: null });
+    try {
+      window.__canvasHtmlOffer1 = null;
+      window.__canvasHtmlOffer2 = null;
+      window.__canvasHtmlOffer3 = null;
+    } catch (_) {}
+    setImageTransform({
+      offer1: { x: 0, y: 0, scale: 1, rotation: 0 },
+      offer2: { x: 0, y: 0, scale: 1, rotation: 0 },
+      offer3: { x: 0, y: 0, scale: 1, rotation: 0 }
+    });
+    setCheckedTechs({});
+    setTechUebernommen([]);
+    setWlanSnapshot(null);
+    setNetBundleMatched(null);
+    setTvSnapshot(null);
+    setFollowUpsByKey({});
+    setDisplayLanguage('de');
+    setTranslatedText({});
+    setStaticTranslations({});
+    setSitLayoutMode('grid');
+    setOfferLayoutMode('grid');
+    setCurrentSitStep(0);
+    setCurrentOfferStep(0);
+    setBundleInsertCounter({ offer1: 0, offer2: 0, offer3: 0 });
+    setPendingBundleImport(null);
+    setMergedCanvases(null);
+    setMaximizedOffer(null);
+    setShowPriceModal(false);
+    setPriceModalTarget('offer1');
+    setPriceModalDraft({ einmalig: '', monatlich: '' });
+    setPrintRecommendationsEnabled(false);
+    try { document.body.classList.remove('print-recs-enabled'); } catch (_) {}
+    try { offerValidityOverrideRef.current = ''; } catch (_) {}
+    try { sharedMsisdnRef.current = ''; } catch (_) {}
+    try { sharedKundeRef.current = ''; } catch (_) {}
+    try { parkAbsichtRef.current = false; } catch (_) {}
+    try { referralPdfRef.current = null; } catch (_) {}
+    try { setReferralPdfBereit(false); setReferralStep1Done(false); } catch (_) {}
+    try { archiveSentRef.current = false; archiveInFlightRef.current = false; } catch (_) {}
+    try { analyticsLoggedRef.current = false; analyticsRowIdRef.current = null; } catch (_) {}
+    if (!keepOfferLinks) {
+      setLoadedOfferId(null);
+      setSessionOfferId(null);
+      cloudSaveIdRef.current = null;
+    }
+    setRedrawCounter(r => r + 1);
+  }, []);
 
   // Angebot automatisch in die Cloud sichern (für "Kunde kommt zurück")
   const cloudAutoSaveCurrentOffer = useCallback(async () => {
-    try {
-      const kundenName = textData?.Kundenname || textData?.CustomerName || '';
-      const label = kundenName || 'Angebot';
-      const id = sessionOfferId || 'offer_' + Date.now();
-      const offer = buildOfferObject(id, label);
-      const res = await cloudSaveOffer(offer);
-      if (res && res.ok) {
-        setSessionOfferId(id);
-      } else if (res && res.reason === 'too-big') {
-        try {
-          triggerToast('⚠️ Angebot zu groß für Cloud-Speicher (viele Zeichnungen/Bilder). Nur lokal gesichert.');
-        } catch (e) {}
+    if (cloudSaveInFlightRef.current) return cloudSaveInFlightRef.current;
+    const task = (async () => {
+      try {
+        const kundenName = textData?.Kundenname || textData?.CustomerName || '';
+        const label = kundenName || 'Angebot';
+        const id = sessionOfferId || cloudSaveIdRef.current || ('offer_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+        cloudSaveIdRef.current = id;
+        const offer = buildOfferObject(id, label);
+        const res = await cloudSaveOffer(offer);
+        if (res && res.ok) {
+          setSessionOfferId(id);
+          return { ok: true, id };
+        }
+        if (res && res.reason === 'too-big') {
+          triggerToast('⚠️ Angebot zu groß für Cloud-Speicher (viele Zeichnungen/Bilder). Lokal speichern.');
+        }
+        return res || { ok: false };
+      } catch (e) {
+        console.warn('Cloud-Autosave fehlgeschlagen:', e);
+        return { ok: false, error: e };
       }
-    } catch (e) {/* still */}
+    })();
+    cloudSaveInFlightRef.current = task;
+    try {
+      return await task;
+    } finally {
+      if (cloudSaveInFlightRef.current === task) cloudSaveInFlightRef.current = null;
+    }
   }, [textData, sessionOfferId, buildOfferObject, triggerToast]);
   const handleSaveOffer = useCallback(async (customName, overwriteId) => {
     setOfferSaving(true);
     try {
       const kundenName = textData?.Kundenname || textData?.CustomerName || '';
-      const datum = textData?.DateValue || new Date().toLocaleDateString('de-DE');
-      // v48.3: Wenn überschrieben wird, die bestehende ID behalten – sonst neue.
-      const id = overwriteId || 'offer_' + Date.now();
-      // Label-Priorität: 1. Custom-Name 2. Kundenname 3. "Unbenannt"
+      const id = overwriteId || sessionOfferId || ('offer_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
       const label = customName && customName.trim() ? customName.trim() : kundenName || 'Unbenannt';
-      const offer = {
-        id,
-        ts: Date.now(),
-        label,
-        datum,
-        segment: segment || '',
-        provider: isCustomProvider ? customProvider : providerSelect,
-        // ── KOMPLETTER Zustand (v47.1) ──
-        textData: {
-          ...textData
-        },
-        drawnStrokes: JSON.parse(JSON.stringify(drawnStrokes)),
-        emailText,
-        beratungsId,
-        view,
-        customerType,
-        providerSelect,
-        customProvider,
-        isCustomProvider,
-        segment,
-        canvasImages: {
-          ...canvasImages
-        },
-        canvasHtml: JSON.parse(JSON.stringify(canvasHtml)),
-        // v56: Bundle-Overlay (z.B. Galaxy Tab) mitspeichern
-        imageTransform: JSON.parse(JSON.stringify(imageTransform)),
-        offerData: JSON.parse(JSON.stringify(offerData)),
-        costState: {
-          ...costState
-        },
-        packagePrices: JSON.parse(JSON.stringify(packagePrices)),
-        showSecondYear,
-        gutschriftBetrag,
-        showSavingsBlock,
-        showCostSection,
-        checkedTechs: {
-          ...checkedTechs
-        },
-        techUebernommen: [...techUebernommen],
-        netBundleMatched,
-        wlanSnapshot,
-        wlanRecommendation,
-        speedRecommendation,
-        followUpsByKey: JSON.parse(JSON.stringify(followUpsByKey)),
-        customerSignature,
-        displayLanguage,
-        translatedText: JSON.parse(JSON.stringify(translatedText)),
-        staticTranslations: JSON.parse(JSON.stringify(staticTranslations)),
-        sitLayoutMode,
-        offerLayoutMode
-      };
-      const ok = await saveOffer(offer);
-      if (ok) {
-        triggerToast(overwriteId ? '💾 Aktualisiert: ' + label : '💾 Gespeichert: ' + label);
-        setSessionOfferId(id); // v48.3: diese Session ist jetzt mit dieser ID verknüpft
+      const offer = buildOfferObject(id, label);
+      const localOk = await saveOffer(offer);
+      const cloudRes = await cloudSaveOffer(offer);
+      const cloudOk = !!(cloudRes && cloudRes.ok);
+
+      if (localOk || cloudOk) {
+        setSessionOfferId(id);
+        cloudSaveIdRef.current = id;
         await loadOffersList();
+        if (localOk && cloudOk) {
+          triggerToast((overwriteId ? '💾 Aktualisiert' : '💾 Gespeichert') + ': ' + label + ' · Gerät & Cloud');
+        } else if (localOk && cloudRes && cloudRes.reason === 'too-big') {
+          triggerToast('💾 Lokal gespeichert · für Cloud zu groß');
+        } else if (localOk) {
+          triggerToast('💾 Lokal gespeichert · Cloud momentan nicht erreichbar');
+        } else {
+          triggerToast('☁️ In der Cloud gespeichert · lokaler Speicher nicht verfügbar');
+        }
       } else {
         triggerToast('⚠️ Speichern fehlgeschlagen');
       }
     } catch (e) {
-      triggerToast('⚠️ Fehler: ' + e.message);
+      triggerToast('⚠️ Fehler: ' + (e && e.message ? e.message : 'Unbekannt'));
+    } finally {
+      setOfferSaving(false);
+      setShowSaveDialog(false);
+      setShowOverwriteDialog(false);
+      setSaveDialogName('');
     }
-    setOfferSaving(false);
-    setShowSaveDialog(false);
-    setShowOverwriteDialog(false);
-    setSaveDialogName('');
-  }, [textData, drawnStrokes, emailText, beratungsId, view, customerType, providerSelect, customProvider, isCustomProvider, segment, canvasImages, canvasHtml, imageTransform, offerData, costState, packagePrices, showSecondYear, gutschriftBetrag, showSavingsBlock, showCostSection, checkedTechs, techUebernommen, netBundleMatched, wlanSnapshot, wlanRecommendation, speedRecommendation, followUpsByKey, customerSignature, displayLanguage, translatedText, staticTranslations, sitLayoutMode, offerLayoutMode, triggerToast, loadOffersList]);
+  }, [textData, sessionOfferId, buildOfferObject, triggerToast, loadOffersList]);
 
   // v48.3: Speichern-Button gedrückt → prüfen ob diese Session schon gespeichert wurde
   const handleSaveButtonClick = useCallback(() => {
@@ -20076,7 +20569,11 @@ function App() {
   }, [textData, sessionOfferId]);
   const handleLoadOffer = useCallback(offer => {
     try {
-      // ── KOMPLETTER Zustand wiederherstellen (v47.2) ──
+      if (!offer || typeof offer !== 'object') throw new Error('Ungültiges Angebot');
+      // Zuerst vollständig neutralisieren. Fehlende Felder in älteren Angeboten
+      // dürfen niemals Werte des zuvor geöffneten Kunden behalten.
+      resetCustomerState({ keepView: true, keepOfferLinks: false });
+      // ── KOMPLETTER Zustand wiederherstellen ──
       if (offer.textData) {
         // v56 FIX: Agent-Name aus dem Link (?agent=...) hat IMMER Vorrang.
         // Sonst konnte ein gespeichertes Angebot mit leerem AgentName den
@@ -20084,7 +20581,9 @@ function App() {
         const restored = {
           ...offer.textData
         };
-        if (LINK_EMPLOYEE) restored.AgentName = LINK_EMPLOYEE;else if (!restored.AgentName) restored.AgentName = offer.textData.AgentName || '';
+        const guaranteedAgent = String(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '').trim();
+        if (guaranteedAgent) restored.AgentName = guaranteedAgent;
+        else if (!restored.AgentName) restored.AgentName = offer.textData.AgentName || '';
         setTextData(restored);
       }
       if (offer.drawnStrokes) setDrawnStrokes(offer.drawnStrokes);
@@ -20095,7 +20594,7 @@ function App() {
       if (offer.providerSelect != null) setProviderSelect(offer.providerSelect);
       if (offer.customProvider != null) setCustomProvider(offer.customProvider);
       if (offer.isCustomProvider != null) setIsCustomProvider(offer.isCustomProvider);
-      if (offer.segment != null) setSegment(offer.segment);
+      if (offer.segment != null) { setSegment(offer.segment); setSegmentTouched(!!offer.segment); }
       if (offer.canvasImages) setCanvasImages(offer.canvasImages);
       if (offer.canvasHtml) {
         // v56: Bundle-Overlay (z.B. Galaxy Tab) wiederherstellen + neu rendern
@@ -20110,14 +20609,25 @@ function App() {
       if (offer.offerData) setOfferData(offer.offerData);
       if (offer.costState) setCostState(offer.costState);
       if (offer.packagePrices) setPackagePrices(offer.packagePrices);
+      if (offer.canvasStatus) {
+        setCanvasStatus(offer.canvasStatus);
+        canvasStatusSyncRef.current = { ...offer.canvasStatus };
+        try { window.__offerCanvasStatusSync = canvasStatusSyncRef.current; } catch (_) {}
+      }
       if (offer.showSecondYear != null) setShowSecondYear(offer.showSecondYear);
       if (offer.gutschriftBetrag != null) setGutschriftBetrag(offer.gutschriftBetrag);
+      if (offer.gutschriftManuell != null) setGutschriftManuell(offer.gutschriftManuell);
+      if (offer.gutschriftRateManuell != null) setGutschriftRateManuell(offer.gutschriftRateManuell);
       if (offer.showSavingsBlock != null) setShowSavingsBlock(offer.showSavingsBlock);
+      if (offer.dismissSavingsHint != null) setDismissSavingsHint(offer.dismissSavingsHint);
       if (offer.showCostSection != null) setShowCostSection(offer.showCostSection);
+      if (offer.skipReason != null) setSkipReason(offer.skipReason);
+      if (offer.skipReasonMode != null) setSkipReasonMode(offer.skipReasonMode);
       if (offer.checkedTechs) setCheckedTechs(offer.checkedTechs);
       if (offer.techUebernommen) setTechUebernommen(offer.techUebernommen);
       if (offer.netBundleMatched !== undefined) setNetBundleMatched(offer.netBundleMatched);
       if (offer.wlanSnapshot !== undefined) setWlanSnapshot(offer.wlanSnapshot);
+      if (offer.tvSnapshot !== undefined) setTvSnapshot(offer.tvSnapshot);
       if (offer.wlanRecommendation !== undefined) setWlanRecommendation(offer.wlanRecommendation);
       if (offer.speedRecommendation !== undefined) setSpeedRecommendation(offer.speedRecommendation);
       if (offer.followUpsByKey) setFollowUpsByKey(offer.followUpsByKey);
@@ -20153,59 +20663,212 @@ function App() {
     } catch (e) {
       triggerToast('⚠️ Laden fehlgeschlagen: ' + e.message);
     }
-  }, [triggerToast, forceRestoreRedraw, finalizeMode]);
+  }, [triggerToast, forceRestoreRedraw, finalizeMode, resetCustomerState]);
   const handleDeleteOffer = useCallback(async id => {
     await deleteOffer(id);
     await loadOffersList();
     triggerToast('🗑 Angebot gelöscht');
   }, [loadOffersList, triggerToast]);
 
-  // ── Autosave: schützt vor Datenverlust bei Browser-Reload / Android-Zurück ──
-  const AUTOSAVE_KEY = 'ps_autosave_v1';
+  // ── Autosave: pro Firebase-Nutzer und o2-App getrennt ──
+  const AUTOSAVE_LEGACY_KEY = 'ps_autosave_v1';
+  const AUTOSAVE_PREFIX = 'ps_o2_autosave_v2_';
   const autosaveTimerRef = React.useRef(null);
+  const autosaveWarnedRef = React.useRef(false);
   const [showRestoreToast, setShowRestoreToast] = React.useState(false);
   const autosaveRestoredRef = React.useRef(false);
+  const getAutosaveKey = React.useCallback(() => {
+    const uid = String(window.__PS_USER_UID || '').trim();
+    return AUTOSAVE_PREFIX + (uid || 'unknown').replace(/[^A-Za-z0-9_-]/g, '_');
+  }, []);
   const saveToAutosave = React.useCallback(() => {
+    const uid = String(window.__PS_USER_UID || '').trim();
+    if (!uid) return;
+    const snap = {
+      appBrand: 'o2',
+      ownerUid: uid,
+      ownerName: String(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || ''),
+      shopId: CURRENT_SHOP.id,
+      ts: Date.now(),
+      textData, drawnStrokes, customerType, segment, packagePrices, providerSelect,
+      customProvider, isCustomProvider, costState, offerData, canvasStatus,
+      wlanRecommendation, speedRecommendation, emailText, beratungsId, skipReason,
+      customerSignature, canvasHtml, wlanSnapshot, techUebernommen, netBundleMatched,
+      tvSnapshot, canvasImages, imageTransform, checkedTechs, followUpsByKey,
+      displayLanguage, translatedText, staticTranslations, showSecondYear,
+      gutschriftBetrag, gutschriftManuell, gutschriftRateManuell,
+      showSavingsBlock, dismissSavingsHint, showCostSection,
+      sitLayoutMode, offerLayoutMode
+    };
+    const key = getAutosaveKey();
     try {
-      const snap = {
-        ts: Date.now(),
-        textData,
-        drawnStrokes,
-        customerType,
-        segment,
-        packagePrices,
-        providerSelect,
-        costState,
-        offerData,
-        canvasStatus,
-        wlanRecommendation,
-        speedRecommendation,
-        emailText,
-        beratungsId,
-        skipReason,
-        customerSignature,
-        // Kundenunterschrift
-        canvasHtml,
-        // Produktempfehlungen HTML
-        wlanSnapshot,
-        // WLAN-Planer Ergebnis (Haus + Empfehlung)
-        techUebernommen,
-        // Übernommene Technologien
-        netBundleMatched,
-        // Gefundenes Netzwerk-Bundle
-        tvSnapshot,
-        // TV-Paket Auswahl
-        canvasImages,
-        // Bilder in Canvases
-        imageTransform // Bild-Positionen
-      };
-      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(snap));
-    } catch (e) {}
-  }, [textData, drawnStrokes, customerType, segment, packagePrices, providerSelect, costState, offerData, canvasStatus, wlanRecommendation, speedRecommendation, emailText, beratungsId, skipReason, customerSignature, canvasHtml, wlanSnapshot, techUebernommen, netBundleMatched, tvSnapshot, canvasImages, imageTransform]);
+      localStorage.setItem(key, JSON.stringify(snap));
+    } catch (e) {
+      // Bei großen Fotos/Signaturen wenigstens Texte und Handschrift retten.
+      try {
+        const lean = { ...snap, reduced: true, customerSignature: null,
+          canvasImages: { offer1: null, offer2: null, offer3: null },
+          canvasHtml: { offer1: null, offer2: null, offer3: null } };
+        localStorage.setItem(key, JSON.stringify(lean));
+        if (!autosaveWarnedRef.current) {
+          autosaveWarnedRef.current = true;
+          triggerToast('⚠️ Autosave ohne Bilder gespeichert – Gerätespeicher fast voll.');
+        }
+      } catch (_) {
+        if (!autosaveWarnedRef.current) {
+          autosaveWarnedRef.current = true;
+          triggerToast('⚠️ Automatische Sicherung nicht möglich – bitte Angebot manuell speichern.');
+        }
+      }
+    }
+  }, [textData, drawnStrokes, customerType, segment, packagePrices, providerSelect, customProvider, isCustomProvider, costState, offerData, canvasStatus, wlanRecommendation, speedRecommendation, emailText, beratungsId, skipReason, customerSignature, canvasHtml, wlanSnapshot, techUebernommen, netBundleMatched, tvSnapshot, canvasImages, imageTransform, checkedTechs, followUpsByKey, displayLanguage, translatedText, staticTranslations, showSecondYear, gutschriftBetrag, gutschriftManuell, gutschriftRateManuell, showSavingsBlock, dismissSavingsHint, showCostSection, sitLayoutMode, offerLayoutMode, getAutosaveKey, triggerToast]);
   const clearAutosave = () => {
+    try { localStorage.removeItem(getAutosaveKey()); } catch (e) {}
+  };
+
+  React.useEffect(() => {
+    autosaveTimerRef.current = setInterval(saveToAutosave, 30000);
+    return () => clearInterval(autosaveTimerRef.current);
+  }, [saveToAutosave]);
+
+  React.useEffect(() => {
+    if (autosaveRestoredRef.current) return;
+    autosaveRestoredRef.current = true;
+    const uid = String(window.__PS_USER_UID || '').trim();
+    const name = String(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '').trim();
+    const key = getAutosaveKey();
+    let raw = null;
+    try { raw = localStorage.getItem(key); } catch (_) {}
+
+    // Alte gemeinsame Sicherung nur übernehmen, wenn sie eindeutig demselben
+    // Mitarbeiter gehört. Dadurch sieht kein Kollege fremde Kundendaten.
+    if (!raw) {
+      try {
+        const legacyRaw = localStorage.getItem(AUTOSAVE_LEGACY_KEY);
+        if (legacyRaw) {
+          const legacy = JSON.parse(legacyRaw);
+          const legacyAgent = String(legacy?.textData?.AgentName || '').trim();
+          if (legacyAgent && name && legacyAgent === name) {
+            legacy.ownerUid = uid;
+            legacy.ownerName = name;
+            legacy.appBrand = 'o2';
+            localStorage.setItem(key, JSON.stringify(legacy));
+            localStorage.removeItem(AUTOSAVE_LEGACY_KEY);
+            raw = JSON.stringify(legacy);
+          }
+        }
+      } catch (_) {}
+    }
+    if (!raw) return;
     try {
-      localStorage.removeItem(AUTOSAVE_KEY);
-    } catch (e) {}
+      const snap = JSON.parse(raw);
+      const sameOwner = snap && snap.appBrand === 'o2' && String(snap.ownerUid || '') === uid;
+      const fresh = snap && snap.ts && Date.now() - snap.ts < 12 * 60 * 60 * 1000;
+      const hasContent = !!(snap?.customerSignature || snap?.emailText || snap?.beratungsId ||
+        Object.values(snap?.textData || {}).some(v => String(v || '').trim()) ||
+        Object.values(snap?.drawnStrokes || {}).some(v => Array.isArray(v) && v.length));
+      if (sameOwner && fresh && hasContent) setShowRestoreToast(true);
+      else clearAutosave();
+    } catch (_) {
+      clearAutosave();
+    }
+  }, [getAutosaveKey]);
+
+  const handleRestoreAutosave = () => {
+    try {
+      const snap = JSON.parse(localStorage.getItem(getAutosaveKey()) || '{}');
+      const uid = String(window.__PS_USER_UID || '').trim();
+      if (!snap || snap.appBrand !== 'o2' || String(snap.ownerUid || '') !== uid) {
+        clearAutosave();
+        throw new Error('Sicherung gehört zu einem anderen Benutzer');
+      }
+      resetCustomerState({ keepView: true, keepOfferLinks: false });
+      if (snap.textData) {
+        const restored = { ...snap.textData };
+        const guaranteedAgent = String(window.__PS_PROFILE_NAME || LINK_EMPLOYEE || '').trim();
+        if (guaranteedAgent) restored.AgentName = guaranteedAgent;
+        setTextData(restored);
+      }
+      if (snap.drawnStrokes) setDrawnStrokes(snap.drawnStrokes);
+      if (snap.customerType !== undefined) setCustomerType(snap.customerType);
+      if (snap.segment !== undefined) { setSegment(snap.segment); setSegmentTouched(!!snap.segment); }
+      if (snap.providerSelect !== undefined) setProviderSelect(snap.providerSelect);
+      if (snap.customProvider !== undefined) setCustomProvider(snap.customProvider);
+      if (snap.isCustomProvider !== undefined) setIsCustomProvider(snap.isCustomProvider);
+      if (snap.packagePrices) setPackagePrices(snap.packagePrices);
+      if (snap.costState) setCostState(snap.costState);
+      if (snap.offerData) setOfferData(snap.offerData);
+      if (snap.canvasStatus) setCanvasStatus(snap.canvasStatus);
+      if (snap.wlanRecommendation !== undefined) setWlanRecommendation(snap.wlanRecommendation);
+      if (snap.speedRecommendation !== undefined) setSpeedRecommendation(snap.speedRecommendation);
+      if (snap.emailText !== undefined) setEmailText(snap.emailText);
+      if (snap.beratungsId !== undefined) setBeratungsId(snap.beratungsId);
+      if (snap.skipReason !== undefined) setSkipReason(snap.skipReason);
+      if (snap.customerSignature !== undefined) setCustomerSignature(snap.customerSignature);
+      if (snap.canvasHtml) {
+        setCanvasHtml(snap.canvasHtml);
+        setBundleInsertCounter({
+          offer1: snap.canvasHtml.offer1 ? 1 : 0,
+          offer2: snap.canvasHtml.offer2 ? 1 : 0,
+          offer3: snap.canvasHtml.offer3 ? 1 : 0
+        });
+      }
+      if (snap.wlanSnapshot !== undefined) setWlanSnapshot(snap.wlanSnapshot);
+      if (snap.techUebernommen) setTechUebernommen(snap.techUebernommen);
+      if (snap.netBundleMatched !== undefined) setNetBundleMatched(snap.netBundleMatched);
+      if (snap.tvSnapshot !== undefined) setTvSnapshot(snap.tvSnapshot);
+      if (snap.canvasImages) setCanvasImages(snap.canvasImages);
+      if (snap.imageTransform) setImageTransform(snap.imageTransform);
+      if (snap.checkedTechs) setCheckedTechs(snap.checkedTechs);
+      if (snap.followUpsByKey) setFollowUpsByKey(snap.followUpsByKey);
+      if (snap.displayLanguage) setDisplayLanguage(snap.displayLanguage);
+      if (snap.translatedText) setTranslatedText(snap.translatedText);
+      if (snap.staticTranslations) setStaticTranslations(snap.staticTranslations);
+      if (snap.showSecondYear !== undefined) setShowSecondYear(snap.showSecondYear);
+      if (snap.gutschriftBetrag !== undefined) setGutschriftBetrag(snap.gutschriftBetrag);
+      if (snap.gutschriftManuell !== undefined) setGutschriftManuell(snap.gutschriftManuell);
+      if (snap.gutschriftRateManuell !== undefined) setGutschriftRateManuell(snap.gutschriftRateManuell);
+      if (snap.showSavingsBlock !== undefined) setShowSavingsBlock(snap.showSavingsBlock);
+      if (snap.dismissSavingsHint !== undefined) setDismissSavingsHint(snap.dismissSavingsHint);
+      if (snap.showCostSection !== undefined) setShowCostSection(snap.showCostSection);
+      if (snap.sitLayoutMode) setSitLayoutMode(snap.sitLayoutMode);
+      if (snap.offerLayoutMode) setOfferLayoutMode(snap.offerLayoutMode);
+      forceRestoreRedraw(snap.drawnStrokes);
+      setShowRestoreToast(false);
+      triggerToast(snap.reduced ? '✅ Sitzung wiederhergestellt (Bilder waren nicht im Autosave).' : '✅ Sitzung wiederhergestellt!');
+    } catch (e) {
+      triggerToast('Wiederherstellung fehlgeschlagen.');
+    }
+  };
+  const RestoreToastBanner = () => {
+    const [countdown, setCountdown] = React.useState(10);
+    React.useEffect(() => {
+      if (!showRestoreToast) return;
+      setCountdown(10);
+      const interval = setInterval(() => {
+        setCountdown(prev => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            setShowRestoreToast(false);
+            // Sicherung bewusst behalten; nur den Hinweis schließen.
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      return () => clearInterval(interval);
+    }, [showRestoreToast]);
+    if (!showRestoreToast) return null;
+    return /*#__PURE__*/React.createElement("div", {
+      className: "print-hide-toast animate-in fade-in",
+      style: { display: 'flex', alignItems: 'center', gap: 6, background: '#f0f6ff', color: '#1e3a8a', padding: '4px 6px 4px 8px', borderRadius: '8px', border: '1.5px solid #bfdbfe', boxShadow: '0 2px 8px rgba(37,99,235,0.12)', fontSize: '11px', fontWeight: 600, flexShrink: 0, whiteSpace: 'nowrap' }
+    }, /*#__PURE__*/React.createElement("span", { style: { fontSize: 13 } }, "💾"), /*#__PURE__*/React.createElement("span", { style: { color: '#1d4ed8', fontWeight: 700 } }, "Sitzung gefunden"), /*#__PURE__*/React.createElement("button", {
+      onClick: handleRestoreAutosave,
+      style: { padding: '3px 8px', borderRadius: 6, background: '#2563eb', border: 'none', color: 'white', fontWeight: 800, fontSize: 10, cursor: 'pointer', flexShrink: 0 }
+    }, "Laden"), /*#__PURE__*/React.createElement("button", {
+      onClick: () => { setShowRestoreToast(false); clearAutosave(); },
+      style: { padding: '3px 6px', borderRadius: 6, background: 'transparent', border: '1px solid #bfdbfe', color: '#64748b', fontWeight: 700, fontSize: 10, cursor: 'pointer', flexShrink: 0 }
+    }, "✕ ", countdown));
   };
 
   // VisualViewport: Toolbar beim Zoom immer sichtbar halten
@@ -20258,150 +20921,11 @@ function App() {
   var sessionIdRef = React.useRef(null);
   React.useEffect(function () {
     if (window.psStartSession) {
-      var agent = window.__LINK_EMPLOYEE || 'Unbekannt';
-      sessionIdRef.current = window.psStartSession(agent, '');
+      var agent = window.__PS_PROFILE_NAME || window.__LINK_EMPLOYEE || 'Unbekannt';
+      var uid = window.__PS_USER_UID || '';
+      sessionIdRef.current = window.psStartSession(agent, '', uid);
     }
   }, []);
-  React.useEffect(() => {
-    autosaveTimerRef.current = setInterval(saveToAutosave, 30000);
-    return () => clearInterval(autosaveTimerRef.current);
-  }, [saveToAutosave]);
-  React.useEffect(() => {
-    if (autosaveRestoredRef.current) return;
-    autosaveRestoredRef.current = true;
-    // v56: Das alte "Sitzung wiederherstellen"-Banner oben rechts wird NICHT
-    // mehr angezeigt. Es ist durch das untere 💾-System (Speichern/Angebote)
-    // ersetzt. Der Autosave läuft im Hintergrund weiter (Schutz bei Reload),
-    // aber das aufdringliche Banner entfällt.
-  }, []);
-  const handleRestoreAutosave = () => {
-    try {
-      const snap = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || '{}');
-      if (snap.textData) {
-        // v56 FIX: Agent-Name aus dem Link hat IMMER Vorrang (Ronny-Bug).
-        const restored = {
-          ...snap.textData
-        };
-        if (LINK_EMPLOYEE) restored.AgentName = LINK_EMPLOYEE;
-        setTextData(restored);
-      }
-      if (snap.drawnStrokes) setDrawnStrokes(snap.drawnStrokes);
-      if (snap.customerType !== undefined) setCustomerType(snap.customerType);
-      if (snap.segment !== undefined) {
-        setSegment(snap.segment);
-        if (snap.segment) setSegmentTouched(true);
-      }
-      if (snap.providerSelect !== undefined) setProviderSelect(snap.providerSelect);
-      if (snap.packagePrices !== undefined) setPackagePrices(snap.packagePrices);
-      if (snap.costState) setCostState(snap.costState);
-      if (snap.offerData) setOfferData(snap.offerData);
-      if (snap.canvasStatus) setCanvasStatus(snap.canvasStatus);
-      if (snap.wlanRecommendation !== undefined) setWlanRecommendation(snap.wlanRecommendation);
-      if (snap.speedRecommendation !== undefined) setSpeedRecommendation(snap.speedRecommendation);
-      if (snap.emailText !== undefined) setEmailText(snap.emailText);
-      if (snap.beratungsId !== undefined) setBeratungsId(snap.beratungsId);
-      if (snap.skipReason !== undefined) setSkipReason(snap.skipReason);
-      if (snap.customerSignature !== undefined) setCustomerSignature(snap.customerSignature);
-      if (snap.canvasHtml) {
-        setCanvasHtml(snap.canvasHtml);
-        // Trigger Re-Render der HTML-Overlays
-        setBundleInsertCounter(prev => ({
-          offer1: (prev.offer1 || 0) + (snap.canvasHtml.offer1 ? 1 : 0),
-          offer2: (prev.offer2 || 0) + (snap.canvasHtml.offer2 ? 1 : 0),
-          offer3: (prev.offer3 || 0) + (snap.canvasHtml.offer3 ? 1 : 0)
-        }));
-      }
-      if (snap.wlanSnapshot) setWlanSnapshot(snap.wlanSnapshot);
-      if (snap.techUebernommen) setTechUebernommen(snap.techUebernommen);
-      if (snap.netBundleMatched) setNetBundleMatched(snap.netBundleMatched);
-      if (snap.tvSnapshot) setTvSnapshot(snap.tvSnapshot);
-      if (snap.canvasImages) setCanvasImages(snap.canvasImages);
-      if (snap.imageTransform) setImageTransform(snap.imageTransform);
-      // v56: Robuste Wiederherstellung statt fester Timer – zeichnet,
-      // bis die Tinte tatsächlich sichtbar ist (s. forceRestoreRedraw).
-      forceRestoreRedraw(snap.drawnStrokes);
-      setShowRestoreToast(false);
-      triggerToast('✅ Sitzung wiederhergestellt!');
-    } catch (e) {
-      triggerToast('Wiederherstellung fehlgeschlagen.');
-    }
-  };
-  const RestoreToastBanner = () => {
-    const [countdown, setCountdown] = React.useState(5);
-    React.useEffect(() => {
-      if (!showRestoreToast) return;
-      setCountdown(5);
-      const interval = setInterval(() => {
-        setCountdown(prev => {
-          if (prev <= 1) {
-            clearInterval(interval);
-            setShowRestoreToast(false);
-            clearAutosave();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => clearInterval(interval);
-    }, [showRestoreToast]);
-    if (!showRestoreToast) return null;
-    return /*#__PURE__*/React.createElement("div", {
-      className: "print-hide-toast animate-in fade-in",
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        background: '#f0f6ff',
-        color: '#1e3a8a',
-        padding: '4px 6px 4px 8px',
-        borderRadius: '8px',
-        border: '1.5px solid #bfdbfe',
-        boxShadow: '0 2px 8px rgba(37,99,235,0.12)',
-        fontSize: '11px',
-        fontWeight: 600,
-        flexShrink: 0,
-        whiteSpace: 'nowrap'
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 13
-      }
-    }, "💾"), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: '#1d4ed8',
-        fontWeight: 700
-      }
-    }, "Sitzung gefunden"), /*#__PURE__*/React.createElement("button", {
-      onClick: handleRestoreAutosave,
-      style: {
-        padding: '3px 8px',
-        borderRadius: 6,
-        background: '#2563eb',
-        border: 'none',
-        color: 'white',
-        fontWeight: 800,
-        fontSize: 10,
-        cursor: 'pointer',
-        flexShrink: 0
-      }
-    }, "Laden"), /*#__PURE__*/React.createElement("button", {
-      onClick: () => {
-        setShowRestoreToast(false);
-        clearAutosave();
-      },
-      style: {
-        padding: '3px 6px',
-        borderRadius: 6,
-        background: 'transparent',
-        border: '1px solid #bfdbfe',
-        color: '#64748b',
-        fontWeight: 700,
-        fontSize: 10,
-        cursor: 'pointer',
-        flexShrink: 0
-      }
-    }, "✕ ", countdown));
-  };
 
   // === Inhalterkennung Offer-Canvas (Status nur bei Inhalt erforderlich) ===
   // === Inhalterkennung Offer-Canvas (wichtig: auch nach Radieren korrekt) ===
@@ -20997,10 +21521,8 @@ function App() {
         }
       })();
       const _datum = new Date().toISOString().slice(0, 10);
-      const blob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
-        addPageNumbers: true
-      });
-      await parkArchiveEntry({
+      const { kundenBlob, archivBlob } = await createParkPdfPair();
+      const parkedOk = await parkArchiveEntry({
         id: 'park_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         ts: Date.now(),
         type: _type,
@@ -21009,8 +21531,9 @@ function App() {
         kunde: (decision?.kunde || sharedKundeRef.current || textData?.Kundenname || '').toString().trim(),
         // v53i: Park-Dialog-Name zuerst
         dateiname: `${_type === 'abschluss' ? 'Abschluss' : 'Angebot'}_${_datum}.pdf`,
-        pdfBlob: blob
+        pdfBlob: archivBlob
       });
+      if (!parkedOk) throw new Error('Lokaler Park-Speicher nicht verfügbar');
       try {
         triggerToast('🅿️ Geparkt – 24h über das Archiv-Symbol abrufbar. Angebot geht nicht verloren.');
       } catch (e) {}
@@ -21026,7 +21549,7 @@ function App() {
       // ══════════════════════════════════════════════════════════════════
       // v53l: DIREKT das native Teilen-Menue oeffnen (kein Zwischenfenster).
       try {
-        await kundenPdfDirektTeilen(blob, openShareSheet);
+        await kundenPdfDirektTeilen(kundenBlob, openShareSheet);
       } catch (e) {}
       // v53k: Vorgang gilt als abgeschlossen-geparkt. Ohne dieses Flag wuerde
       // Schritt 2 (Archiv) gleich nochmal die Nummer abfragen und ein
@@ -21230,6 +21753,25 @@ function App() {
   // "Jetzt teilen"-Fenster zurueck.
   // Rueckgabe: true = geteilt, false = abgebrochen/nicht moeglich.
   // ══════════════════════════════════════════════════════════════════════════
+  const createParkPdfPair = async () => {
+    // Parken braucht absichtlich zwei verschiedene Ausfertigungen:
+    // Kunde = volle Qualität + Empfehlungsseite, Archiv = komprimiert,
+    // ohne Empfehlungsseite, dafür mit interner Arbeitskopie.
+    const kundenBlob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
+      addPageNumbers: true,
+      archiveOptimized: false,
+      includeRecommendations: true,
+      embedWorkCopy: false
+    });
+    const archivBlob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
+      addPageNumbers: true,
+      archiveOptimized: true,
+      includeRecommendations: false,
+      embedWorkCopy: true
+    });
+    return { kundenBlob, archivBlob };
+  };
+
   const kundenPdfDirektTeilen = async (blob, openShareSheetFn) => {
     // WICHTIG zur Reihenfolge: Beim Parken wird das PDF ERST NACH dem Klick
     // gerendert (mehrere Sekunden). Die Nutzer-Geste ist danach abgelaufen und
@@ -21349,43 +21891,11 @@ function App() {
             }, 1500);
             return;
           }
-          const __msisdn = sharedMsisdnRef.current || '';
-          const __pdfName = __msisdn ? `Angebot_${__msisdn}_${new Date().toISOString().slice(0, 10)}.pdf` : `Angebot_${new Date().toISOString().slice(0, 10)}.pdf`;
-          if (!runOnlyWithOfferValidity(() => {
-            triggerToast('PDF wird erstellt… einen Moment.');
-            createPrintLookPdfBlob(triggerToast, ensurePrintHeaders).then(blob => {
-              const pdfFileName = __pdfName;
-              const url = URL.createObjectURL(blob);
-              window.open(url, '_blank');
-              setTimeout(() => URL.revokeObjectURL(url), 120000);
-              setTimeout(() => setShowReferralModal(true), 400);
-            }).catch(e => triggerToast('PDF-Fehler: ' + (e && e.message ? e.message : 'Unbekannt')));
-          })) return;
-          // v76: Kein separater Upload mehr hier - laeuft zentral in
-          // dispatchArchiveMail() (ueber sendToArchive nach dem Referral-Schritt),
-          // damit pro Abschluss nur EINE Datei in SharePoint landet, nicht zwei.
-          // Exakt dieselbe Logik wie der "PDF drucken / Empfohlen"-Button im FinishTypeModal
-          (async () => {
-            triggerToast('PDF wird erstellt… einen Moment.');
-            try {
-              const blob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders);
-              const pdfFileName = __pdfName;
-              const pdfFile = new File([blob], pdfFileName, {
-                type: 'application/pdf'
-              });
-              window.__lastPdfBlob = blob;
-              window.__lastPdfFile = pdfFile;
-              // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
-              sendArchivCopyToNewFlow(blob, { type: 'abschluss' });
-              // v57b: IMMER "Jetzt teilen"-Dialog. Direkt-Teilen scheitert auf
-              // iPad/Android nach langer Erzeugung (Geste abgelaufen). Der Tap im
-              // Dialog liefert die frische Geste → natives Menü öffnet garantiert.
-              trackOutputAction('digital');
-              setPdfShareReady(pdfFile);
-            } catch (e) {
-              triggerToast('PDF-Fehler: ' + (e && e.message ? e.message : 'Unbekannt'));
-            }
-          })();
+          if (!runOnlyWithOfferValidity(() => setShowReferralModal(true))) return;
+          // Genau ein Kunden-PDF: Das 2-Schritte-Fenster öffnet sofort und
+          // sein bestehender Vorab-Renderer erzeugt den Blob einmalig. Erst der
+          // frische Tipp auf „Senden / drucken“ öffnet das System-Teilen-Menü.
+          setShowReferralModal(true);
         })(); // Ende async Rufnummer-zuerst-Wrapper
         return;
       }
@@ -21423,16 +21933,8 @@ function App() {
       setReferralStep1Done(false);
     } catch (e) {}
 
-    // v48.1: Nach Fertigstellen (egal ob Abschluss oder Angebot) das ggf. geladene
-    // Angebot aus dem lokalen Speicher entfernen – es ist fertig bearbeitet (+ als PDF
-    // gesichert), muss also nicht mehr in der Wiederherstellung liegen (Speicher schonen).
-    if (loadedOfferId) {
-      deleteOffer(loadedOfferId).then(() => {
-        loadOffersList();
-      }).catch(() => {});
-      setLoadedOfferId(null);
-    }
-    setSessionOfferId(null); // v48.3: Session beendet → nächstes Speichern ist wieder "neu"
+    // Geladene/geparkte Angebote erst NACH bestätigter Archiv-Übergabe
+    // löschen. Bei Abbruch oder Fehler muss der Vorgang vollständig erhalten bleiben.
 
     if (type === 'deal' || type === 'park') {
       // v53p: Beide Wege fuehren zur Unterschrift. Der Unterschied
@@ -21448,6 +21950,7 @@ function App() {
     const computedResult = computeResultFromActivity(drawnStrokes, textData, false);
     try {
       appendAnalyticsRow({
+        id: analyticsRowIdRef.current || (analyticsRowIdRef.current = 'analytics_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9)),
         ts: new Date().toISOString(),
         user: (() => {
           const raw = textData && textData.AgentName ? String(textData.AgentName).trim() : '';
@@ -21459,20 +21962,21 @@ function App() {
         shopId: CURRENT_SHOP.id,
         beratungsId: beratungsId || '',
         result: computedResult,
-        exempt: LINK_EMPLOYEE === 'Diego da Silva' || isExemptEmployee,
+        exempt: PS_IS_ADMIN() || isExemptEmployee,
         skipReasonText: typeof skipReason === 'string' && skipReason.trim() && skipReason !== 'Übersprungen (Admin)' ? skipReason.trim().slice(0, 200) : '',
         canvasStats: buildCanvasStatsFromDrawnStrokes(drawnStrokes, textData, {
           skipReason,
           offerData
         })
       });
+      analyticsLoggedRef.current = true;
     } catch (e) {/* ignore */}
     try {
       const _slug = new URLSearchParams(window.location.search || '').get('m') || '';
       const _nr = 'PS-' + new Date().toISOString().slice(2, 10).replace(/-/g, '') + '-' + Math.random().toString(36).slice(2, 5).toUpperCase();
       const _arc = (() => {
         try {
-          return JSON.parse(localStorage.getItem('ps_admin_archive') || '[]');
+          return JSON.parse(localStorage.getItem('ps_o2_admin_archive') || '[]');
         } catch (e) {
           return [];
         }
@@ -21491,7 +21995,7 @@ function App() {
           Kundenname: textData && textData.Kundenname || ''
         }
       });
-      localStorage.setItem('ps_admin_archive', JSON.stringify(_arc));
+      localStorage.setItem('ps_o2_admin_archive', JSON.stringify(_arc));
       triggerToast('✅ Vorgang ' + _nr + ' gespeichert');
     } catch (e) {}
     if (type === 'quote') {
@@ -21554,10 +22058,8 @@ function App() {
                     return '';
                   }
                 })();
-                const blob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
-                  addPageNumbers: true
-                });
-                await parkArchiveEntry({
+                const { kundenBlob, archivBlob } = await createParkPdfPair();
+                const parkedOk = await parkArchiveEntry({
                   id: 'park_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
                   ts: Date.now(),
                   type: 'abschluss',
@@ -21566,8 +22068,9 @@ function App() {
                   kunde: (decision?.kunde || sharedKundeRef.current || textData?.Kundenname || '').toString().trim(),
                   // v53i: Park-Dialog-Name zuerst
                   dateiname: buildArchivDateiname('abschluss', _datum, ''),
-                  pdfBlob: blob
+                  pdfBlob: archivBlob
                 });
+                if (!parkedOk) throw new Error('Lokaler Park-Speicher nicht verfügbar');
                 archiveSentRef.current = true;
                 try {
                   triggerToast('🅿️ Geparkt – 24h über das Archiv-Symbol abrufbar.');
@@ -21581,7 +22084,7 @@ function App() {
                 // Lektion: nie neu laden, solange geteilt wird).
                 // v53l: DIREKT teilen – kein Zwischenfenster.
                 try {
-                  await kundenPdfDirektTeilen(blob, openShareSheet);
+                  await kundenPdfDirektTeilen(kundenBlob, openShareSheet);
                 } catch (e) {}
                 try {
                   handleClearAll();
@@ -21628,6 +22131,7 @@ function App() {
     });
     try {
       appendAnalyticsRow({
+        id: analyticsRowIdRef.current || (analyticsRowIdRef.current = 'analytics_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9)),
         ts: new Date().toISOString(),
         user: (() => {
           const raw = textData && textData.AgentName ? String(textData.AgentName).trim() : '';
@@ -21639,20 +22143,21 @@ function App() {
         shopId: CURRENT_SHOP.id,
         beratungsId: beratungsId || '',
         result: computedResult,
-        exempt: LINK_EMPLOYEE === 'Diego da Silva' || isExemptEmployee,
+        exempt: PS_IS_ADMIN() || isExemptEmployee,
         skipReasonText: typeof skipReason === 'string' && skipReason.trim() && skipReason !== 'Übersprungen (Admin)' ? skipReason.trim().slice(0, 200) : '',
         canvasStats: buildCanvasStatsFromDrawnStrokes(drawnStrokes, textData, {
           skipReason,
           offerData
         })
       });
+      analyticsLoggedRef.current = true;
     } catch (e) {}
     try {
       const _slug = new URLSearchParams(window.location.search || '').get('m') || '';
       const _nr = 'PS-' + new Date().toISOString().slice(2, 10).replace(/-/g, '') + '-' + Math.random().toString(36).slice(2, 5).toUpperCase();
       const _arc = (() => {
         try {
-          return JSON.parse(localStorage.getItem('ps_admin_archive') || '[]');
+          return JSON.parse(localStorage.getItem('ps_o2_admin_archive') || '[]');
         } catch (e) {
           return [];
         }
@@ -21671,7 +22176,7 @@ function App() {
           Kundenname: textData && textData.Kundenname || ''
         }
       });
-      localStorage.setItem('ps_admin_archive', JSON.stringify(_arc));
+      localStorage.setItem('ps_o2_admin_archive', JSON.stringify(_arc));
     } catch (e) {}
 
     // Papier-Unterschrift: Angebotsgültigkeit VOR dem Freunde-werben-Popup abfragen,
@@ -21732,13 +22237,13 @@ function App() {
     }
   };
   const handleSkipToOffer = async reasonData => {
-    const agentName = LINK_EMPLOYEE || 'Unbekannt';
+    const agentName = window.__PS_PROFILE_NAME || LINK_EMPLOYEE || 'Unbekannt';
     const currentCount = await getSkipCountThisMonth(agentName);
     const limit = await getSkipLimit(agentName);
 
     // Diego (Admin) + freigeschaltete Mitarbeiter (exempt im Admin) können unbegrenzt überspringen
     // Frisch aus Firestore lesen, damit eine Freischaltung sofort greift (ohne Neuladen)
-    const isDiego = agentName === 'Diego da Silva' || isExemptEmployee || (await getSkipExempt(agentName));
+    const isDiego = PS_IS_ADMIN() || isExemptEmployee || (await getSkipExempt(agentName));
     // v47.5: "Nur Handyfinanzierung" ist eine legitime Bestellung, kein Skip.
     // Zählt NICHT gegen das monatliche Limit (separate Kategorie).
     const isHandyFinanzierung = reasonData === 'Nur Handyfinanzierung';
@@ -21764,131 +22269,10 @@ function App() {
     }
   };
   const handleClearAll = () => {
-    try {
-      offerValidityOverrideRef.current = '';
-    } catch (e) {}
-    setDrawnStrokes({
-      main: [],
-      email: [],
-      beratungs_id: [],
-      provider: [],
-      notes: [],
-      skip_reason: [],
-      sit_Kundenname: [],
-      sit_Rufnummer: [],
-      sit_Anbieter: [],
-      sit_Hardware: [],
-      sit_Nutzung: [],
-      sit_Haushalt: [],
-      sit_WeitereProdukte: [],
-      sit_Fernsehen: [],
-      sit_WiFi: [],
-      sit_Gesamtkosten: [],
-      offer1: [],
-      offer2: [],
-      offer3: [],
-      cost_einmalig: [],
-      cost_monatlich1: [],
-      cost_monatlich2: [],
-      cost_smartphone: [],
-      agent_name: [],
-      date_field: [],
-      offer_valid_until: []
-    });
-    setTextData({
-      AgentName: '',
-      DateValue: '',
-      OfferValidUntil: '',
-      offer1: '',
-      offer2: '',
-      offer3: '',
-      Kundenname: '',
-      Rufnummer: '',
-      Anbieter: '',
-      Hardware: '',
-      Nutzung: '',
-      Haushalt: '',
-      'Weitere Produkte': '',
-      Fernsehen: '',
-      WiFi: '',
-      Gesamtkosten: ''
-    });
-    setCustomerType("");
-    setSegment("");
-    setProviderSelect("");
-    setCustomProvider("");
-    setIsCustomProvider(false);
-    setWlanRecommendation('');
-    setSpeedRecommendation('');
-    setEmailText('');
-    setBeratungsId('');
-    setSkipReason('');
-    setSkipReasonMode('keyboard');
-    setCostState({
-      mobile: '',
-      landline: '',
-      tv: ''
-    });
-    setOfferData(initialOfferData);
-    setPackagePrices({
-      offer1: {
-        einmalig: '',
-        monatlich: ''
-      },
-      offer2: {
-        einmalig: '',
-        monatlich: ''
-      },
-      offer3: {
-        einmalig: '',
-        monatlich: ''
-      }
-    });
-    setCanvasStatus({
-      offer1: 'neutral',
-      offer2: 'neutral',
-      offer3: 'neutral'
-    });
-    setCustomerSignature(null);
-    setCanvasImages({
-      offer1: null,
-      offer2: null,
-      offer3: null
-    });
-    setImageTransform({
-      offer1: {
-        x: 0,
-        y: 0,
-        scale: 1.0,
-        rotation: 0
-      },
-      offer2: {
-        x: 0,
-        y: 0,
-        scale: 1.0,
-        rotation: 0
-      },
-      offer3: {
-        x: 0,
-        y: 0,
-        scale: 1.0,
-        rotation: 0
-      }
-    });
-    setRedrawCounter(r => r + 1);
-    try {
-      clearAutosave();
-    } catch (e) {}
-    try {
-      setShowRestoreToast(false);
-    } catch (e) {}
-    try {
-      referralPdfRef.current = null;
-      setReferralPdfBereit(false);
-      setReferralStep1Done(false);
-      parkAbsichtRef.current = false;
-    } catch (e) {} /* v53f: Vorab-PDF verwerfen – neuer Kunde, neues Dokument */
-    triggerToast('Alle Daten gelöscht und Ansicht zurückgesetzt.');
+    resetCustomerState({ keepView: false, keepOfferLinks: false });
+    try { clearAutosave(); } catch (e) {}
+    try { setShowRestoreToast(false); } catch (e) {}
+    triggerToast('Alle Kundendaten vollständig gelöscht und neue Beratung gestartet.');
   };
   const Toast = ({
     message
@@ -23547,11 +23931,15 @@ function App() {
   useEffect(() => {
     translatedTextLiveRef.current = translatedText;
   }, [translatedText]);
+  const translationRunRef = useRef({ code: '', running: false });
   const handleLocalTranslation = useCallback(targetCode => {
     if (targetCode === 'de') return;
+    if (translationRunRef.current.running && translationRunRef.current.code === targetCode) return;
+    translationRunRef.current = { code: targetCode, running: true };
     const langName = ALL_LANGUAGES.find(l => l.code === targetCode)?.name || targetCode.toUpperCase();
     const dict = MOCK_TRANSLATIONS[targetCode];
     if (!dict) {
+      translationRunRef.current = { code: '', running: false };
       triggerToast(`⚠️ Keine Übersetzung für ${langName} verfügbar`);
       return;
     }
@@ -23601,7 +23989,10 @@ function App() {
           } catch (_) {}
         }
         if (done > 0) triggerToast(`✅ ${done} Texte auf ${langName} übersetzt`);else triggerToast('⚠️ Übersetzungsdienst gerade nicht erreichbar (Tageslimit?) – Beschriftungen bleiben übersetzt');
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        if (translationRunRef.current.code === targetCode) translationRunRef.current = { code: '', running: false };
+      }
     })();
   }, [triggerToast]);
   useEffect(() => {
@@ -23696,7 +24087,16 @@ function App() {
   };
   const createPrintLookPdfBlob = async (triggerToast, ensurePrintHeaders, opts = {}) => {
     if (!window.html2pdf) throw new Error('html2pdf missing');
-    const addPageNumbers = false; // FIX: kein "Seite X / N" im Share-PDF
+    const addPageNumbers = opts.addPageNumbers === true;
+    // Archiv-PDF: kleinere Datei, Kunden-PDF bleibt unveraendert.
+    // JPEG 0.90 + maximal scale 2 reduziert die Groesse typischerweise deutlich,
+    // ohne auf A4 oder am Bildschirm sichtbar an Schaerfe zu verlieren.
+    const archiveOptimized = opts.archiveOptimized === true;
+    // Kunden-PDF darf die Empfehlungsseite enthalten; die interne Archiv-PDF nicht.
+    // Standard bleibt true, damit alle bisherigen Kunden-/Teilen-Abläufe unverändert bleiben.
+    const includeRecommendations = opts.includeRecommendations !== false;
+    // Arbeitskopie nur intern: Kunden-PDF enthält keine versteckten Form-/Kundendaten.
+    const embedWorkCopy = opts.embedWorkCopy === true || archiveOptimized;
 
     // === ORIENTIERUNG (v42.2) ===
     // RELEASE-STAND: Export ist IMMER Querformat (das bewährte, getestete Layout).
@@ -23758,7 +24158,7 @@ function App() {
     // Share-PDF: eigener Modus im Iframe
     try {
       doc.body.classList.add('pdf-share-mode');
-      if (window.__printRecommendationsEnabled) doc.body.classList.add('print-recs-enabled');
+      if (includeRecommendations && window.__printRecommendationsEnabled) doc.body.classList.add('print-recs-enabled');
 
       // ULTRA SHARP v37: avoid blur from CSS transforms/filters during rasterization
       try {
@@ -23976,6 +24376,8 @@ function App() {
 
 input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!important}
          .pdf-share-mode .share-page{break-after:page; page-break-after:always; width:297mm; max-width:297mm; height:210mm; min-height:210mm; max-height:210mm; display:flex; flex-direction:column; box-sizing:border-box; overflow:hidden;}
+         /* Wichtig: Nach der letzten echten Seite keinen weiteren Umbruch erzwingen. */
+         .pdf-share-mode .share-page:last-child{break-after:auto !important; page-break-after:auto !important;}
          .pdf-share-mode .share-page-header{flex:0 0 16mm; height:16mm; min-height:16mm; max-height:16mm; box-sizing:border-box;}
          .pdf-share-mode .share-page-content{flex:1 1 auto; min-height:0; height:calc(210mm - 16mm); overflow:hidden; box-sizing:border-box;}
          .pdf-share-mode .share-cover{height:100% !important; min-height:100% !important; max-height:100% !important; box-sizing:border-box;}
@@ -25255,7 +25657,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         const pel = document.querySelector('.print-netzwerk-anlage');
         if (pel) anlageHtml = pel.innerHTML || '';
       }
-      if (anlageHtml && anlageHtml.trim().length > 10) {
+      if (includeRecommendations && anlageHtml && anlageHtml.trim().length > 10) {
         const p3content = doc.createElement('div');
         p3content.style.cssText = 'width:100%;height:100%;overflow:hidden;box-sizing:border-box;background:#ffffff;';
         p3content.innerHTML = anlageHtml;
@@ -25307,12 +25709,12 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       // ══════════════════════════════════════════════════════════════════
       image: {
         type: 'jpeg',
-        quality: 0.98
+        quality: archiveOptimized ? 0.90 : 0.98
       },
       html2canvas: {
         // iOS/iPad: Canvas-Pixel-Limit (~16M px) → hohe scale erzeugt Leerseiten.
         // Daher auf iOS-Geräten scale reduzieren.
-        scale: function () {
+        scale: Math.min(archiveOptimized ? 2 : 99, function () {
           try {
             var ua = navigator.userAgent || '';
             var isIOS = /iPad|iPhone|iPod/.test(ua) || navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
@@ -25352,7 +25754,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
           } catch (e) {
             return 2;
           }
-        }(),
+        }()),
         useCORS: true,
         allowTaint: true,
         imageTimeout: 20000,
@@ -25720,7 +26122,6 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     try {
       // --- HARD LIMIT: keep ONLY first 4 pages in the generated PDF (Share) ---
       const sourceEl = doc.getElementById('pdf-content') || doc.getElementById('print-container') || doc.body;
-
       // ═══ v52.2 APPLE-FIX: Alle Bilder VOR dem Rastern als dataURL einbetten ═══
       // Safari/iOS verweigert externe Bilder (z.B. Aktionsmappe-Overlays) beim
       // Canvas-Rendern, wenn sie ohne CORS im Cache liegen → html2canvas malt dann
@@ -25778,33 +26179,20 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       }
       if (pdf && typeof pdf.getNumberOfPages === 'function') {
         try {
-          const total = pdf.getNumberOfPages();
-          // Anlage-Seite mitrechnen wenn vorhanden
-          const hasAnlage = !!(window.__anlageHtml && window.__anlageHtml.trim().length > 10);
-          const maxPages = 2 + offerPageCount + 1 + (hasAnlage ? 1 : 0); // Cover + Sit + Angebote + Outro + ggf. Anlage
           if (typeof pdf.deletePage === 'function') {
-            // Überzählige Seiten am Ende entfernen (iPad erzeugt oft Leerseiten)
-            for (let i = total; i > maxPages; i--) {
-              try {
-                pdf.deletePage(i);
-              } catch (_) {}
-            }
-            // Zusätzlich: komplett leere weiße Seiten erkennen und entfernen
+            // Nur nachweislich leere SCHLUSSseiten entfernen. Keine starre
+            // Seitenzahl mehr: Falls ein echter Inhalt ausnahmsweise überläuft,
+            // darf diese Folgeseite nicht abgeschnitten werden.
             try {
-              const remaining = pdf.getNumberOfPages();
-              for (let i = remaining; i >= 1; i--) {
-                pdf.setPage(i);
-                // Wenn eine Seite keinerlei Inhalt hat (nur weiß), entfernen
-                // jsPDF speichert content streams – sehr kurze = leer
-                const pageInfo = pdf.internal.pages[i];
-                if (pageInfo && Array.isArray(pageInfo)) {
-                  const contentLen = pageInfo.join('').length;
-                  if (contentLen < 50 && pdf.getNumberOfPages() > 1) {
-                    try {
-                      pdf.deletePage(i);
-                    } catch (_) {}
-                  }
-                }
+              while (pdf.getNumberOfPages() > 1) {
+                const last = pdf.getNumberOfPages();
+                const pageInfo = pdf.internal.pages[last];
+                const stream = Array.isArray(pageInfo) ? pageInfo.join('\n') : String(pageInfo || '');
+                const hasPaintedObject = /\/[A-Za-z0-9_.-]+\s+Do\b/.test(stream);
+                const hasTextOperator = /\b(?:Tj|TJ)\b/.test(stream);
+                const meaningfulLength = stream.replace(/\s+/g, '').length;
+                if (hasPaintedObject || hasTextOperator || meaningfulLength >= 80) break;
+                pdf.deletePage(last);
               }
             } catch (_) {}
           }
@@ -25832,7 +26220,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       // (PDF-Upload) erkennt die App die Kopie und stellt ALLES wieder her –
       // ohne Cloud, ohne Kosten, auf jedem Tablet, solange das PDF existiert.
       try {
-        if (blob && window.PDFLib) {
+        if (embedWorkCopy && blob && window.PDFLib) {
           const _kopieName = textData?.Kundenname || textData?.CustomerName || 'Angebot';
           const _offerObj = buildOfferObject('pdfcopy_' + Date.now().toString(36), _kopieName);
           const _json = JSON.stringify(_offerObj);
@@ -25974,9 +26362,8 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
 
   // ══════════════════════════════════════════════════════════════════════
   // ZENTRALE FUNKTION (v53.7) für ALLE internen Archiv-Uploads:
-  //  - automatisch beim Kundenversand ("An Kunden senden")
-  //  - manuell über den bestehenden Archivierungsbutton (Notfalllösung)
-  // Beide Wege rufen GENAU diese Funktion auf und senden denselben
+  //  - ausschließlich beim bewussten Archivieren
+  // Der Archivweg ruft GENAU diese Funktion auf und sendet denselben
   // vollständigen Payload an dieselbe ARCHIVE_FLOW_URL. Es gibt daneben
   // keinen zweiten aktiven Upload-Weg mehr (uploadPdfToPowerAutomate()
   // wird nirgends mehr aufgerufen).
@@ -25985,8 +26372,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
   // bereits berechnete Werte (z.B. der manuelle Archivierungsbutton hat sie
   // schon) per opts übergeben; ohne opts werden sie hier frisch erzeugt.
   // opts (alle optional): { type, agent, dsl, archiveFileName, archiveSubject }
-  // Blockiert den Kundenversand NIE (kein await durch den Aufrufer nötig,
-  // alle Fehler werden hier abgefangen). Solange ARCHIVE_FLOW_URL der
+  // Fehler werden als Status an die Oberfläche zurückgegeben. Solange ARCHIVE_FLOW_URL der
   // Platzhalter ist: leise überspringen.
   // ══════════════════════════════════════════════════════════════════════
   const sendArchivCopyToNewFlow = (blob, opts) => {
@@ -26085,8 +26471,10 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
           },
           body: JSON.stringify(payload)
         });
+        return { ok: true, handedToFlow: true };
       } catch (e) {
         console.warn('[ARCHIV-FLOW] Upload fehlgeschlagen:', e);
+        return { ok: false, error: e };
       }
     })();
   };
@@ -26109,14 +26497,16 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         };
       }
       try {
-        await sendArchivCopyToNewFlow(_blob, {
+        const result = await sendArchivCopyToNewFlow(_blob, {
           type: _typ,
           agent: 'TestAgent',
           dsl: 'nein'
         });
-        console.log('[TEST-UPLOAD] Gesendet (Typ: ' + _typ + '). In Postfach & Flow-Verlauf prüfen.');
+        if (!result || result.ok !== true) throw (result && result.error) || new Error('Test-Upload fehlgeschlagen.');
+        console.log('[TEST-UPLOAD] An den unveränderten Flow übergeben (Typ: ' + _typ + '). In Postfach & Flow-Verlauf prüfen.');
         return {
-          skipped: false
+          skipped: false,
+          ok: true
         };
       } catch (e) {
         console.error('[TEST-UPLOAD] Fehler:', e);
@@ -26148,7 +26538,9 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       const _hasTarget = typeof ARCHIVE_FLOW_URL === 'string' && ARCHIVE_FLOW_URL && !ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE') || !!_webhook;
       if (!_hasTarget) return; // Upload-Funktion bewusst inaktiv → nichts rendern, nichts senden
       const blob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
-        addPageNumbers: true
+        addPageNumbers: true,
+        archiveOptimized: true,
+        includeRecommendations: false
       });
       const agent = getAgent();
       const dsl = getDsl();
@@ -26576,20 +26968,23 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         _dslUpload = getDslFlagForUpload();
       } catch (e) {}
       try {
-        await sendArchivCopyToNewFlow(blob, {
+        const flowResult = await sendArchivCopyToNewFlow(blob, {
           type: _typUpload,
           agent: _agentUpload,
           dsl: _dslUpload,
           archiveFileName: dateiname,
           archiveSubject: betreff
         });
+        if (!flowResult || flowResult.ok !== true) throw (flowResult && flowResult.error) || new Error('Archiv-Flow konnte nicht erreicht werden.');
         try {
-          triggerToast('✅ Archiviert.');
+          triggerToast('✅ Archivierung an den Flow übergeben.');
         } catch (e) {}
+        return { ok: true, handedToFlow: true };
       } catch (e) {
         console.warn('[ARCHIV-FLOW] Upload fehlgeschlagen:', e);
+        try { triggerToast('⚠️ Archivierung fehlgeschlagen – Vorgang bleibt geöffnet.'); } catch (_) {}
+        return { ok: false, error: e };
       }
-      return; // fertig - kein Teilen-Fenster noetig
     }
 
     const saveBlob = b => {
@@ -26663,14 +27058,14 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
           try {
             triggerToast('„Mail/Outlook" wählen → ' + ARCHIV_EMAIL + ' → senden. PDF ist angehängt.');
           } catch (e) {}
-          return;
+          return { ok: true, sharedManually: true };
         } catch (errShare) {
           // AbortError = Nutzer hat das native Menü selbst geschlossen → NICHT erneut nerven
           if (errShare && (errShare.name === 'AbortError' || /abort/i.test(errShare.message || ''))) {
             try {
               triggerToast('Abgebrochen. PDF nicht gesendet.');
             } catch (e) {}
-            return;
+            return { ok: false, cancelled: true };
           }
           // sonst: Geste war abgelaufen o.ä. → unten Fenster als Notnagel zeigen
         }
@@ -26699,7 +27094,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         try {
           triggerToast('„Mail/Outlook" wählen → Adresse ' + ARCHIV_EMAIL + ' → senden. PDF ist bereits angehängt.');
         } catch (e) {}
-        return;
+        return { ok: true, sharedManually: true };
       }
       // Nutzer hat den Teilen-Dialog abgebrochen → PDF sichern + Mail-App als Notnagel
     } catch (e) {}
@@ -26722,6 +27117,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     try {
       triggerToast('PDF gespeichert → Outlook öffnet. Bitte PDF anhängen & senden.');
     } catch (e) {}
+    return { ok: true, manualFallback: true };
   };
 
   // ── ARCHIV: PDF speichern + vorausgefüllte Mail an Archiv-Postfach öffnen ──
@@ -26755,7 +27151,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       } catch (e) {}
       if (!_bestaetigt) {
         const _res = await ensureKundennameBeforePdf();
-        if (!_res || !_res.proceed) return; // abgebrochen → nichts archivieren
+        if (!_res || !_res.proceed) return { ok: false, cancelled: true }; // abgebrochen → nichts archivieren
       }
     }
 
@@ -26807,7 +27203,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         try {
           triggerToast('PDF-Generator nicht verfügbar.');
         } catch (e) {}
-        return;
+        return { ok: false, error: new Error('PDF-Generator nicht verfügbar.') };
       }
       document.body.classList.add('exporting');
       showOverlay2('Archiv-PDF wird erstellt …');
@@ -26820,7 +27216,9 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         } catch (e) {}
       }, 30000);
       blob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
-        addPageNumbers: true
+        addPageNumbers: true,
+        archiveOptimized: true,
+        includeRecommendations: false
       });
       clearTimeout(_t);
       hideOverlay2();
@@ -26840,7 +27238,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         if (!_ruf) {
           // Kein gültiger Eintrag → parken statt ohne Nummer senden
           try {
-            await parkArchiveEntry({
+            const parkedOk = await parkArchiveEntry({
               id: 'park_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
               ts: Date.now(),
               type: _type,
@@ -26851,6 +27249,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
               dateiname: `${_type === 'abschluss' ? 'Abschluss' : 'Angebot'}_${_datum}.pdf`,
               pdfBlob: blob
             });
+            if (!parkedOk) throw new Error('Lokaler Park-Speicher nicht verfügbar');
             try {
               triggerToast('🅿️ Geparkt – 24h über das Archiv-Symbol abrufbar. Angebot geht nicht verloren.');
             } catch (e) {}
@@ -26862,7 +27261,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
               triggerToast('Parken fehlgeschlagen – bitte Nummer direkt eingeben.');
             } catch (_) {}
           }
-          return;
+          return { ok: true, parked: true };
         }
       }
 
@@ -26879,7 +27278,8 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       // ⚠️ GESPERRT: Dateiname NUR über buildArchivDateiname() – PENCIL_-Präfix
       // steuert die Power-Automate-Sortierung.
       const _dateiname = _type === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde);
-      await dispatchArchiveMail(blob, _dateiname, _betreff);
+      const dispatchResult = await dispatchArchiveMail(blob, _dateiname, _betreff);
+      return dispatchResult && dispatchResult.ok === true ? dispatchResult : { ok: false, error: dispatchResult && dispatchResult.error };
     } catch (err) {
       hideOverlay2();
       try {
@@ -26901,6 +27301,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       try {
         triggerToast('Archiv-PDF gespeichert – bitte manuell an ' + ARCHIV_EMAIL + ' senden.');
       } catch (e) {}
+      return { ok: false, error: err, savedLocally: !!blob };
     } finally {
       hideOverlay2();
       try {
@@ -26921,10 +27322,13 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     const _betreff = buildArchivBetreff(entry.type, entry.datum, _ruf, entry.agent);
     const _dateiname = buildArchivDateiname(entry.type, entry.datum, _ruf);
     try {
-      await dispatchArchiveMail(entry.pdfBlob, _dateiname, _betreff);
+      const result = await dispatchArchiveMail(entry.pdfBlob, _dateiname, _betreff);
+      if (!result || result.ok !== true) return false;
+      // Erst nach erfolgreicher Übergabe löschen. Bei Abbruch/Fehler bleibt
+      // der geparkte Vorgang vollständig für einen neuen Versuch erhalten.
       await deleteParkedArchiveEntry(entry.id);
       try {
-        triggerToast('✅ Nachgetragen und versendet.');
+        triggerToast('✅ Nachgetragen und an den Flow übergeben.');
       } catch (e) {}
       try {
         refreshParkedCount();
@@ -27193,6 +27597,10 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
   // Wird beim PDF-Export/Ausdrucken aufgerufen, damit auch reine Angebote gezählt werden.
   const logQuoteToStatistics = () => {
     try {
+      // Fertigstellen/Unterschrift hat den Vorgang bereits klassifiziert.
+      // PDF teilen, drucken oder erneut senden darf niemals einen zweiten
+      // Statistikdatensatz erzeugen oder einen Abschluss als Angebot zählen.
+      if (analyticsLoggedRef.current) return;
       const computedResult = computeResultFromActivity(drawnStrokes, textData, false);
       const _cs = buildCanvasStatsFromDrawnStrokes(drawnStrokes, textData, {
         skipReason,
@@ -27220,6 +27628,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         }
       })();
       appendAnalyticsRow({
+        id: analyticsRowIdRef.current || (analyticsRowIdRef.current = 'analytics_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9)),
         ts: new Date().toISOString(),
         user: (() => {
           const raw = textData && textData.AgentName ? String(textData.AgentName).trim() : '';
@@ -27235,10 +27644,11 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         // v58: aktueller DSL-Anbieter des Kunden
         dslBedarf: _dslBedarf ? 'ja' : 'nein',
         // v58: DSL-Angebot gemacht?
-        exempt: LINK_EMPLOYEE === 'Diego da Silva' || isExemptEmployee,
+        exempt: PS_IS_ADMIN() || isExemptEmployee,
         skipReasonText: typeof skipReason === 'string' && skipReason.trim() && skipReason !== 'Übersprungen (Admin)' ? skipReason.trim().slice(0, 200) : '',
         canvasStats: _cs
       });
+      analyticsLoggedRef.current = true;
       if (window.psCloseSession) window.psCloseSession(sessionIdRef.current);
     } catch (e) {/* ignore */}
   };
@@ -27298,6 +27708,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       promise: p
     };
     p.catch(() => {
+      if (referralPdfRef.current && referralPdfRef.current.promise === p) referralPdfRef.current = null;
       if (!cancelled) setReferralPdfBereit(false);
     });
     return () => {
@@ -27365,12 +27776,12 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     if (__erstUebergabe) {
       if (!customerSignature) {
         try {
-          cloudAutoSaveCurrentOffer();
+          await cloudAutoSaveCurrentOffer();
         } catch (e) {}
       }
       logQuoteToStatistics();
-      // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
-      sendArchivCopyToNewFlow(blob);
+      // Archivierung bewusst ERST bei Klick auf „Ins Archiv“.
+      // Die Kunden-PDF darf nicht zusätzlich an den Archiv-Flow gehen.
     }
 
     // DIREKT teilen – die Geste (Klick bzw. „Weiter" der Namensabfrage) ist frisch
@@ -27429,7 +27840,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     // ☁️ Angebot ohne Unterschrift → automatisch in Cloud sichern (für "Kunde kommt zurück")
     if (!customerSignature) {
       try {
-        cloudAutoSaveCurrentOffer();
+        await cloudAutoSaveCurrentOffer();
       } catch (e) {}
     }
     try {
@@ -27465,8 +27876,8 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
 
       // ── Statistik sofort loggen (zählt unabhängig vom Teilen-Weg als "Angebot") ──
       logQuoteToStatistics();
-      // NEU (v53.5): interne Archiv-PDF im Hintergrund an den neuen Flow senden
-      sendArchivCopyToNewFlow(blob);
+      // Archivierung bewusst ERST bei Klick auf „Ins Archiv“.
+      // Die Kunden-PDF darf nicht zusätzlich an den Archiv-Flow gehen.
 
       // v53b: DIREKT teilen – der Blob lag schon bereit, die Geste
       // (Klick bzw. „Weiter" der Namensabfrage) ist noch frisch.
@@ -27665,49 +28076,14 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     isOpen: showReferralModal,
     onClose: mode => {
       setShowReferralModal(false);
+      // Schließen bedeutet ausdrücklich: Vorgang offen lassen. Archivierung
+      // startet ausschließlich über den grünen Schritt-2-Button.
       if (mode === 'cancel') {
-        try {
-          setCustomerSignature(null);
-        } catch (e) {}
-        try {
-          setTextData(prev => ({
-            ...prev,
-            OfferValidUntil: ''
-          }));
-        } catch (e) {}
-        try {
-          offerValidityOverrideRef.current = '';
-        } catch (e) {}
-        try {
-          digitalTouchedRef.current['offer_valid_until'] = false;
-        } catch (e) {}
-        try {
-          setDrawnStrokes(prev => ({
-            ...prev,
-            offer_valid_until: []
-          }));
-        } catch (e) {}
-      } else {
-        // Vorgang abgeschlossen (nicht abgebrochen) → jetzt archivieren
-        if (!archiveSentRef.current) {
-          archiveSentRef.current = true;
-          const _typ = customerSignature ? 'abschluss' : 'angebot';
-          // Nur beim Abschluss nach Nummer fragen; reines Angebot ohne Abfrage
-          const _ask = _typ === 'abschluss';
-          // Finalisiertes Cloud-Angebot: bei Abschluss aus der Cloud entfernen
-          if (_typ === 'abschluss' && loadedOfferId) {
-            try {
-              cloudDeleteOffer(loadedOfferId);
-            } catch (e) {}
-          }
-          setTimeout(() => {
-            try {
-              sendToArchive(_typ, {
-                askForNumber: _ask
-              });
-            } catch (e) {}
-          }, 250);
-        }
+        try { setCustomerSignature(null); } catch (e) {}
+        try { setTextData(prev => ({ ...prev, OfferValidUntil: '' })); } catch (e) {}
+        try { offerValidityOverrideRef.current = ''; } catch (e) {}
+        try { digitalTouchedRef.current['offer_valid_until'] = false; } catch (e) {}
+        try { setDrawnStrokes(prev => ({ ...prev, offer_valid_until: [] })); } catch (e) {}
       }
     },
     onPrint: () => {
@@ -27724,120 +28100,46 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     pdfBereit: referralPdfBereit,
     istAbschluss: !!customerSignature,
     archivLaeuft: archivLaeuft,
-    onFinish: () => {
-      // ══════════════════════════════════════════════════════════
-      // v53h: FENSTER BLEIBT OFFEN BIS ZUM NEUSTART
-      // ──────────────────────────────────────────────────────────
-      // Vorher schloss das Fenster SOFORT und der Neustart kam
-      // erst spaeter (visibilitychange oder 60-Sekunden-Notbremse).
-      // In der Zwischenzeit stand die App voll bedienbar da – der
-      // Verkaeufer konnte zeichnen oder die PDF verschieben, und
-      // mittendrin startete sie ploetzlich neu.
-      //
-      // Jetzt: Das Fenster bleibt stehen und zeigt "Wird
-      // archiviert…". Erst wenn der Teilen-Vorgang durch ist,
-      // wird neu gestartet. Solange ist nichts bedienbar.
-      // ══════════════════════════════════════════════════════════
+    onFinish: async () => {
+      if (archiveInFlightRef.current) return;
+      archiveInFlightRef.current = true;
       setArchivLaeuft(true);
-      const doReload = () => {
-        try {
-          handleClearAll();
-        } catch (e) {}
-        try {
-          clearAutosave();
-        } catch (e) {}
+      const _typ = customerSignature ? 'abschluss' : 'angebot';
+      const _ask = _typ === 'abschluss';
+      try {
+        const result = archiveSentRef.current
+          ? { ok: true, alreadyDone: true }
+          : await sendToArchive(_typ, { askForNumber: _ask });
+
+        if (!result || result.ok !== true) {
+          archiveInFlightRef.current = false;
+          setArchivLaeuft(false);
+          // Name/Nummer-Abbruch oder technischer Fehler: nichts löschen,
+          // nichts zurücksetzen, damit erneut versucht werden kann.
+          if (!(result && result.cancelled)) {
+            try { triggerToast('⚠️ Nicht archiviert – bitte erneut versuchen.'); } catch (e) {}
+          }
+          return;
+        }
+
+        archiveSentRef.current = true;
+        // Erst jetzt das fertiggestellte Cloud-/lokale Angebot entfernen.
+        if (loadedOfferId) {
+          try { await cloudDeleteOffer(loadedOfferId); } catch (e) {}
+          try { await deleteOffer(loadedOfferId); } catch (e) {}
+          try { setLoadedOfferId(null); } catch (e) {}
+        }
+        setSessionOfferId(null);
+        try { handleClearAll(); } catch (e) {}
+        try { clearAutosave(); } catch (e) {}
         try {
           window.__psIntentionalReload = true;
           window.location.reload();
         } catch (e) {}
-      };
-      if (!archiveSentRef.current) {
-        archiveSentRef.current = true;
-        const _typ = customerSignature ? 'abschluss' : 'angebot';
-        const _ask = _typ === 'abschluss';
-        if (_typ === 'abschluss' && loadedOfferId) {
-          try {
-            cloudDeleteOffer(loadedOfferId);
-          } catch (e) {}
-        }
-        let _done = false;
-        const _finish = () => {
-          if (_done) return;
-          _done = true;
-          try {
-            document.removeEventListener('visibilitychange', _onVis);
-          } catch (e) {}
-          try {
-            clearTimeout(_notbremse);
-          } catch (e) {}
-          doReload();
-        };
-        // Rueckkehr aus dem Teilen-Menue (App war im Hintergrund)
-        const _onVis = () => {
-          if (document.visibilityState === 'visible') {
-            try {
-              document.removeEventListener('visibilitychange', _onVis);
-            } catch (e) {}
-            setTimeout(_finish, 800);
-          }
-        };
-        document.addEventListener('visibilitychange', _onVis);
-        // Notbremse, falls der Nutzer gar nichts mehr tut
-        const _notbremse = setTimeout(_finish, 60000);
-
-        // ══════════════════════════════════════════════════
-        // v53j: NEUSTART ERST, WENN DER TEILEN-DIALOG ZU IST
-        // ──────────────────────────────────────────────────
-        // Windows-Besonderheit: navigator.share() gilt dort
-        // schon als erledigt, sobald der Freigeben-Dialog
-        // OFFEN ist – nicht erst nach der App-Auswahl.
-        // Der fruehere setTimeout(_finish, 600) hat die Seite
-        // deshalb neu geladen, WAEHREND der Dialog noch offen
-        // war. Folge: Windows verlor die Dateiquelle, die
-        // App-Kacheln blieben grau, die Mail ging nie raus.
-        //
-        // Erkennung: Der Freigeben-Dialog ist ein OS-Fenster.
-        // Solange er offen ist, hat der Browser KEINEN Fokus
-        // (visibilityState bleibt dabei 'visible', deshalb
-        // half der visibilitychange-Pfad auf Windows nie).
-        // Erst wenn der Fokus zurueck ist, wird neu gestartet.
-        // Android/iOS: share() resolved dort erst nach dem
-        // Schliessen des Menues – hasFocus() ist dann meist
-        // schon true und es geht sofort weiter.
-        // ══════════════════════════════════════════════════
-        const _warteAufRueckkehr = () => {
-          try {
-            if (document.hasFocus && document.hasFocus()) {
-              setTimeout(_finish, 500);
-              return;
-            }
-            const _onFocus = () => {
-              try {
-                window.removeEventListener('focus', _onFocus);
-              } catch (e) {}
-              setTimeout(_finish, 500);
-            };
-            window.addEventListener('focus', _onFocus);
-            // Sicherheitsnetz, falls das focus-Event verloren geht
-            setTimeout(() => {
-              try {
-                window.removeEventListener('focus', _onFocus);
-              } catch (e) {}
-              _finish();
-            }, 45000);
-          } catch (e) {
-            setTimeout(_finish, 800);
-          }
-        };
-        try {
-          Promise.resolve(sendToArchive(_typ, {
-            askForNumber: _ask
-          })).then(_warteAufRueckkehr).catch(_warteAufRueckkehr);
-        } catch (e) {
-          _warteAufRueckkehr();
-        }
-      } else {
-        setTimeout(doReload, 300);
+      } catch (e) {
+        archiveInFlightRef.current = false;
+        setArchivLaeuft(false);
+        try { triggerToast('⚠️ Archivierung fehlgeschlagen – Vorgang bleibt geöffnet.'); } catch (_) {}
       }
     }
   }), /*#__PURE__*/React.createElement(FinishTypeModal, {
@@ -28138,7 +28440,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       d: ICONS.RefreshCw,
       size: 16
     })))));
-  })(), LINK_EMPLOYEE === 'Diego da Silva' && /*#__PURE__*/React.createElement(AdminSafeBoundary, {
+  })(), PS_IS_ADMIN() && /*#__PURE__*/React.createElement(AdminSafeBoundary, {
     onClose: () => setShowAdmin(false)
   }, /*#__PURE__*/React.createElement(AdminModal, {
     isOpen: showAdmin,
@@ -28160,7 +28462,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     isOpen: showStats,
     onClose: () => setShowStats(false),
     onOpenAdmin: () => {
-      if (LINK_EMPLOYEE === 'Diego da Silva') {
+      if (PS_IS_ADMIN()) {
         setShowStats(false);
         setShowAdmin(true);
       }
@@ -28171,7 +28473,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     isOpen: showMyStats,
     onClose: () => setShowMyStats(false),
     employeeMode: true,
-    lockedAgent: LINK_EMPLOYEE || ''
+    lockedAgent: window.__PS_PROFILE_NAME || LINK_EMPLOYEE || ''
   })), showOverwriteDialog && ReactDOM.createPortal(/*#__PURE__*/React.createElement("div", {
     style: {
       position: 'fixed',
@@ -28632,14 +28934,14 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       marginLeft: '-8px',
       marginRight: '2px'
     }
-  }, "v53.7"), LINK_EMPLOYEE && LINK_EMPLOYEE !== 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
+  }, "v54.0.3"), LINK_EMPLOYEE && !PS_IS_ADMIN() && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowMyStats(true),
     className: "p-2 text-slate-400 hover:text-emerald-600 rounded-full hover:bg-emerald-50 transition-colors",
     title: "Meine Statistik – Qualität & Vorgänge ansehen"
   }, /*#__PURE__*/React.createElement(Icon, {
     d: ICONS.Activity,
     size: 18
-  })), LINK_EMPLOYEE === 'Diego da Silva' && /*#__PURE__*/React.createElement("button", {
+  })), PS_IS_ADMIN() && /*#__PURE__*/React.createElement("button", {
     onClick: handleOpenStats,
     className: "p-2 text-slate-400 hover:text-blue-600 rounded-full hover:bg-blue-50 transition-colors",
     title: "📊 Statistik & Admin"
@@ -28697,7 +28999,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       whiteSpace: 'nowrap',
       textOverflow: 'ellipsis'
     }
-  }, view === 'situation' ? 'Ihre Aktuelle Situation' : 'Ihr Persönliches Angebot'), view === 'situation' && (LINK_EMPLOYEE === 'Diego da Silva' || LINK_SHOPWECHSEL) && /*#__PURE__*/React.createElement("div", {
+  }, view === 'situation' ? 'Ihre Aktuelle Situation' : 'Ihr Persönliches Angebot'), view === 'situation' && PS_GET_ALLOWED_SHOP_IDS().length > 1 && /*#__PURE__*/React.createElement("div", {
     className: "ps-shop-switch no-print print-hide-toast",
     style: {
       display: 'flex',
@@ -28755,7 +29057,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       cursor: 'pointer',
       maxWidth: '190px'
     }
-  }, Object.keys(SHOPS).filter(id => PS_ALLOWED_SHOP_IDS.includes(id)).map(id => /*#__PURE__*/React.createElement("option", {
+  }, Object.keys(SHOPS).filter(id => PS_GET_ALLOWED_SHOP_IDS().includes(id)).map(id => /*#__PURE__*/React.createElement("option", {
     key: id,
     value: id
   }, SHOPS[id].name)))), view === 'offer' && /*#__PURE__*/React.createElement("div", {
@@ -34645,7 +34947,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     size: 18
   })), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
-      if (LINK_EMPLOYEE === 'Diego da Silva' || isExemptEmployee) {
+      if (PS_IS_ADMIN() || isExemptEmployee) {
         handleSkipToOffer('Übersprungen (Admin)');
       } else {
         setShowSkipReasonModal(true);
@@ -35544,6 +35846,9 @@ function __startPencilAppWhenReady(attempt = 0) {
       }
       return;
     }
+    // Login-/Statusanzeige aus dem Auth-Gate entfernen, bevor React übernimmt.
+    // So startet createRoot immer auf einem sauberen Container.
+    try { rootEl.innerHTML = ''; } catch (e) {}
     const root = ReactDOM.createRoot(rootEl);
     root.render(/*#__PURE__*/React.createElement(App, null));
   } catch (err) {
@@ -35564,25 +35869,20 @@ function __startPencilAppWhenReady(attempt = 0) {
 // Start-Aufruf unten durch diesen Gate-Check; danach läuft alles
 // exakt wie vorher (LINK_EMPLOYEE/CURRENT_SHOP_ID lesen wie bisher
 // aus localStorage 'ps_link_agent' / 'ps_shop').
-// Login/Registrierung/Freigabe laufen im EIGENEN Firebase-Projekt
-// "Beta Pencil Selling" (beta-pencil-selling) — komplett getrennt
-// vom Stats-Projekt (pencil-selling-stats-2f86e). Keine Einladungen
-// mehr nötig: Mitarbeiter registrieren sich selbst, Freigabe läuft
-// über das Administrator-Dashboard (Feld 'active' in users/{uid}).
+// Login/Registrierung/Freigabe laufen im EIGENEN Projekt
+// "o2-pencil-selling" — demselben Projekt wie die Statistik
+// oben (STATS_FB_CONFIG). Konsolidiert von "beta-pencil-selling" (altes,
+// separates Konto) hierher, damit alles auf einem Account liegt - genau
+// wie bei der Telekom-Edition. Keine Einladungen mehr nötig: Mitarbeiter
+// registrieren sich selbst, Freigabe läuft über das Administrator-
+// Dashboard (Feld 'active' in users/{uid}).
 // ═══════════════════════════════════════════════════════════════
-const BETA_FB_CONFIG = {
-  apiKey: "AIzaSyAV2CD6Kwp0WVmeGuVO4lIHbAf-UhrQZ1M",
-  authDomain: "beta-pencil-selling.firebaseapp.com",
-  projectId: "beta-pencil-selling",
-  storageBucket: "beta-pencil-selling.firebasestorage.app",
-  messagingSenderId: "154760755449",
-  appId: "1:154760755449:web:a4a006f738077eb5344a28"
-};
+const BETA_FB_CONFIG = STATS_FB_CONFIG;
 const PS_ADMIN_EMAIL = 'd.dasilva@hetec-gmbh.de';
 
 function __psGetBetaApp() {
-  var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'beta'; });
-  return existing ? existing : window.firebase.initializeApp(BETA_FB_CONFIG, 'beta');
+  var existing = window.firebase && window.firebase.apps && window.firebase.apps.find(function (a) { return a.name === 'stats'; });
+  return existing ? existing : window.firebase.initializeApp(BETA_FB_CONFIG, 'stats');
 }
 
 function __psGetBetaDb() {
@@ -35605,6 +35905,12 @@ function __psGetAuth() {
 function __psGateRender(html) {
   var el = document.getElementById('root');
   if (el) el.innerHTML = html;
+}
+
+function __psEscapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+  });
 }
 
 function __psShowError(msg) {
@@ -35644,14 +35950,14 @@ function __psRenderAuth(mode, prefill) {
       '<option value="Frau"' + (prefill.anrede === 'Frau' ? ' selected' : '') + '>Frau</option>' +
       '<option value="Divers"' + (prefill.anrede === 'Divers' ? ' selected' : '') + '>Divers</option>' +
     '</select>' +
-    '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" value="' + (prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-    '<input id="ps-gate-nachname" type="text" placeholder="Nachname" value="' + (prefill.nachname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
-    '<input id="ps-gate-email" type="email" placeholder="E-Mail (@hetec-gmbh.de)" value="' + (prefill.email || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-vorname" type="text" placeholder="Vorname (optional)" value="' + __psEscapeHtml(prefill.vorname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-nachname" type="text" placeholder="Nachname" value="' + __psEscapeHtml(prefill.nachname || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail (@hetec-gmbh.de)" value="' + __psEscapeHtml(prefill.email || '') + '" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-2 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<select id="ps-gate-shop" class="w-full mb-4 px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white">' + __psShopOptionsHtml() + '</select>' +
     '<button id="ps-gate-submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-lg text-sm">Konto erstellen</button>'
   ) : (
-    '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + (prefill.email || '') + '" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
+    '<input id="ps-gate-email" type="email" placeholder="E-Mail" value="' + __psEscapeHtml(prefill.email || '') + '" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<input id="ps-gate-pw" type="password" placeholder="Passwort" class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />' +
     '<label class="flex items-center gap-2 mb-4 text-sm text-slate-600 cursor-pointer select-none">' +
       '<input id="ps-gate-remember" type="checkbox" checked class="w-4 h-4" /> Zugangsdaten dauerhaft merken' +
@@ -35696,23 +36002,34 @@ function __psRenderAuth(mode, prefill) {
       if (pw.length < 6) { __psShowError('Passwort braucht mind. 6 Zeichen.'); return; }
       var displayName = vorname ? (vorname + ' ' + nachname).trim() : nachname;
       var auth = __psGetAuth();
+      var createdUser = null;
       auth.setPersistence(window.firebase.auth.Auth.Persistence.LOCAL).then(function () {
         return auth.createUserWithEmailAndPassword(email, pw);
       }).then(function (cred) {
-        return cred.user.sendEmailVerification().then(function () {
-          return __psGetBetaDb().collection('users').doc(cred.user.uid).set({
-            email: email,
-            anrede: anrede,
-            vorname: vorname,
-            nachname: nachname,
-            name: displayName,
-            shopId: shopId,
-            shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
-            role: 'verkaeufer',
-            status: 'pending',
-            active: false,
-            isTestUser: false,
-            createdAt: Date.now()
+        createdUser = cred.user;
+        // Profil zuerst anlegen. Scheitert das, wird das soeben erzeugte
+        // Auth-Konto wieder entfernt – kein unbrauchbares "E-Mail belegt"-Konto.
+        return __psGetBetaDb().collection('users').doc(cred.user.uid).set({
+          email: email,
+          anrede: anrede,
+          vorname: vorname,
+          nachname: nachname,
+          name: displayName,
+          shopId: shopId,
+          shop: (SHOPS[shopId] && SHOPS[shopId].name) || '',
+          role: 'verkaeufer',
+          status: 'pending',
+          active: false,
+          isTestUser: false,
+          createdAt: Date.now()
+        }).catch(function (profileError) {
+          return cred.user.delete().catch(function () {}).then(function () { throw profileError; });
+        }).then(function () {
+          // Kann die Mail vorübergehend nicht versendet werden, bleibt das
+          // korrekte Profil bestehen. Auf der Bestätigungsseite kann erneut
+          // gesendet oder der Zugang durch den Admin freigegeben werden.
+          return cred.user.sendEmailVerification().catch(function (mailError) {
+            console.warn('Bestätigungsmail konnte nicht sofort gesendet werden:', mailError);
           });
         });
       }).catch(function (e) {
@@ -35834,16 +36151,53 @@ function __psAddFloatingLogout() {
 }
 
 function __PS_startAuthGate(startAppFn) {
+  // Sofort einen sichtbaren Status in #root setzen. Damit kann der äußere
+  // Loader verschwinden, selbst wenn Firebase auf einem langsamen Gerät
+  // länger für die Wiederherstellung der Anmeldung benötigt.
+  __psGateRender(
+    '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#000068;padding:20px;font-family:system-ui,sans-serif">' +
+      '<div style="text-align:center;color:white">' +
+        '<div style="width:42px;height:42px;border:4px solid rgba(255,255,255,.2);border-top-color:#3DE0FF;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px"></div>' +
+        '<div style="font-size:14px;font-weight:800;color:#3DE0FF">Anmeldung wird geprüft …</div>' +
+      '</div>' +
+    '</div>'
+  );
   var auth = __psGetAuth();
-  if (!auth) { startAppFn(); return; }
+  if (!auth) {
+    __psGateRender('<div class="min-h-screen flex items-center justify-center bg-red-50 p-4 text-center"><div class="max-w-sm"><h1 class="text-lg font-bold text-red-800 mb-2">Anmeldung konnte nicht geladen werden</h1><p class="text-sm text-red-700">Bitte Seite neu laden. Aus Sicherheitsgründen wird Pencil Selling ohne Firebase-Anmeldung nicht geöffnet.</p></div></div>');
+    return;
+  }
   var appStarted = false;
+  var authStateResolved = false;
+  var authWatchdog = setTimeout(function () {
+    if (!authStateResolved && !appStarted) {
+      __psGateRender(
+        '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f8fafc;padding:20px;font-family:system-ui,sans-serif;text-align:center">' +
+          '<div style="max-width:380px"><h2 style="margin:0 0 8px;color:#0f172a">Anmeldung antwortet nicht</h2>' +
+          '<p style="margin:0 0 16px;color:#64748b;font-size:14px">Bitte prüfe die Internetverbindung und lade Pencil Selling einmal neu.</p>' +
+          '<button onclick="location.reload()" style="border:0;border-radius:10px;padding:11px 18px;background:#2563eb;color:white;font-weight:800;cursor:pointer">Neu laden</button></div>' +
+        '</div>'
+      );
+    }
+  }, 20000);
 
   function startOnce(profile) {
     if (appStarted) return;
     appStarted = true;
+    var _isAdmin = !!(profile && profile.role === 'admin');
+    try {
+      window.__PS_IS_ADMIN = _isAdmin;
+      window.__PS_USER_UID = (window.__betaAuth && window.__betaAuth.currentUser && window.__betaAuth.currentUser.uid) || '';
+      window.__PS_PROFILE_NAME = (profile && profile.name) || '';
+    } catch (e) {}
     var _home = (profile && profile.shopId) || 'aalen';
     var _extra = (profile && Array.isArray(profile.extraShopIds)) ? profile.extraShopIds : [];
-    var _allowed = [_home].concat(_extra.filter(function (id) { return id !== _home; }));
+    // Administratoren dürfen immer alle Shops nutzen. Ohne diese Ausnahme
+    // wurde Diego nach jedem Reload wieder auf den Heimatshop zurückgesetzt,
+    // obwohl das Dropdown durch die Admin-Rolle sichtbar war.
+    var _allowed = _isAdmin
+      ? Object.keys(SHOPS)
+      : [_home].concat(_extra.filter(function (id) { return id !== _home; }));
     var _priorShop = null;
     try { _priorShop = localStorage.getItem('ps_shop'); } catch (e) {}
     // BUGFIX: 'ps_shop' NICHT mehr blind auf den Heimatshop zurücksetzen –
@@ -35864,10 +36218,10 @@ function __PS_startAuthGate(startAppFn) {
       // Standorte frei – exakt dieselbe bereits im Admin-Dashboard vorhandene
       // Logik, hier nur konsumiert.
       localStorage.setItem('ps_allowed_shops', JSON.stringify(_allowed));
-      localStorage.setItem('ps_shopwechsel', _extra.length > 0 ? '1' : '0');
+      localStorage.setItem('ps_shopwechsel', (_isAdmin || _extra.length > 0) ? '1' : '0');
     } catch (e) {}
-    // CURRENT_SHOP_ID (und PS_ALLOWED_SHOP_IDS) sind oben im Skript als
-    // const berechnet, BEVOR das Firestore-Profil geladen ist – also aus
+    // CURRENT_SHOP_ID wird oben im Skript als const berechnet, BEVOR das
+    // Firestore-Profil geladen ist – also aus
     // dem 'ps_shop', der VOR diesem Aufruf in localStorage stand. Nur wenn
     // der jetzt ermittelte, tatsächlich gültige Shop davon abweicht (z.B.
     // beim allerersten Start, oder wenn eine Freigabe entzogen wurde), hilft
@@ -35892,7 +36246,7 @@ function __PS_startAuthGate(startAppFn) {
       '<div class="min-h-screen flex items-center justify-center bg-slate-100 p-4 text-center">' +
         '<div class="max-w-sm">' +
           '<h1 class="text-lg font-bold text-slate-800 mb-2">Verbindung fehlgeschlagen</h1>' +
-          '<p class="text-sm text-slate-500 mb-4">' + ((err && err.message) ? err.message : 'Unbekannter Fehler. Bitte erneut versuchen.') + '</p>' +
+          '<p class="text-sm text-slate-500 mb-4">' + __psEscapeHtml((err && err.message) ? err.message : 'Unbekannter Fehler. Bitte erneut versuchen.') + '</p>' +
           '<button id="ps-gate-retry" class="bg-blue-600 text-white text-sm font-semibold px-4 py-2 rounded-lg mr-2">Erneut versuchen</button>' +
           '<button id="ps-gate-logout2" class="text-slate-400 text-sm underline">Abmelden</button>' +
         '</div>' +
@@ -35947,6 +36301,8 @@ function __PS_startAuthGate(startAppFn) {
   }
 
   auth.onAuthStateChanged(function (user) {
+    authStateResolved = true;
+    try { clearTimeout(authWatchdog); } catch (e) {}
     if (!user) { __psRenderAuth('login'); return; }
     // SICHERHEITSFIX: Sicherheitsreihenfolge - Domain zuerst prüfen, vor
     // jeder weiteren Prüfung/jedem Firestore-Zugriff.
@@ -35954,18 +36310,11 @@ function __PS_startAuthGate(startAppFn) {
       __psDenyAccess('Dieses Konto ist für Pencil Selling nicht zugelassen (nur @hetec-gmbh.de).', false);
       return;
     }
-    user.reload().then(function () {
-      if (!user.emailVerified) {
-        __psRenderWait('verify');
-        var iv = setInterval(function () {
-          user.reload().then(function () {
-            if (user.emailVerified) { clearInterval(iv); location.reload(); }
-          }).catch(function () {});
-        }, 4000);
-        return;
-      }
-      // Token neu holen: sonst sieht Firestore kurzzeitig noch die alte
-      // email_verified=false-Eigenschaft und blockiert die Nutzer-Abfrage.
+
+    // Token neu holen + Profil-Listener starten. Ausgelagert, damit sowohl
+    // der normale Weg (erst E-Mail bestätigen) als auch der Admin-Vorrang-
+    // Weg unten (Profil ist schon freigegeben) hierher führen können.
+    function proceedToProfileGate() {
       user.getIdToken(true).then(function () {
         var isBootstrapAdmin = __psIsAdminEmail(user.email);
         var autoActivateAttempted = false;
@@ -35977,7 +36326,15 @@ function __PS_startAuthGate(startAppFn) {
             // bedeutet NICHT zuverlässig, dass das Profil wirklich fehlt -
             // nur, dass gerade nichts Gültiges zwischengespeichert ist.
             // Erst auf eine vom Server bestätigte Antwort warten.
-            if (snap.metadata && snap.metadata.fromCache) return;
+            if (snap.metadata && snap.metadata.fromCache) {
+              __psGateRender(
+                '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f8fafc;padding:20px;font-family:system-ui,sans-serif;text-align:center">' +
+                  '<div><div style="font-weight:800;color:#0f172a;margin-bottom:6px">Profil wird vom Server geladen …</div>' +
+                  '<div style="font-size:13px;color:#64748b">Bitte kurz die Internetverbindung prüfen.</div></div>' +
+                '</div>'
+              );
+              return;
+            }
             if (isBootstrapAdmin) {
               // Admin-Bootstrapping: falls der Administrator die Haupt-App
               // vor dem Admin-Dashboard öffnet, existiert sein eigenes
@@ -36058,7 +36415,38 @@ function __PS_startAuthGate(startAppFn) {
           }
         }, function (err) { showFatal(err); });
       }).catch(showFatal);
-    }).catch(showFatal);
+    }
+
+    // NEU: Admin-Freigabe geht vor E-Mail-Bestätigung. Wurde der Mitarbeiter
+    // bereits über die Mitarbeiterverwaltung freigegeben (active+approved),
+    // kommt er sofort rein - unabhängig davon, ob/wann die Bestätigungsmail
+    // ankommt. Das eigene Profil lesen ist auch OHNE bestätigte E-Mail
+    // erlaubt (Firestore-Regel: dafür reicht istFirmenKonto()). Ist noch
+    // NICHT freigegeben, läuft es wie bisher: erst E-Mail bestätigen.
+    __psGetBetaDb().collection('users').doc(user.uid).get().then(function (snap) {
+      var d = snap.exists ? snap.data() : null;
+      var bereitsFreigegeben = !!d && d.active === true && d.status === 'approved';
+      if (bereitsFreigegeben || __psIsAdminEmail(user.email)) {
+        proceedToProfileGate();
+        return;
+      }
+      waitForEmailThenProceed();
+    }).catch(function () { waitForEmailThenProceed(); });
+
+    function waitForEmailThenProceed() {
+      user.reload().then(function () {
+        if (!user.emailVerified) {
+          __psRenderWait('verify');
+          var iv = setInterval(function () {
+            user.reload().then(function () {
+              if (user.emailVerified) { clearInterval(iv); location.reload(); }
+            }).catch(function () {});
+          }, 4000);
+          return;
+        }
+        proceedToProfileGate();
+      }).catch(showFatal);
+    }
   });
 }
 
@@ -36066,58 +36454,73 @@ __PS_startAuthGate(__startPencilAppWhenReady);
 
 // === v24: Bundle-Laufzeit Dropdown/Badge sichtbar machen (Tailwind-Klassen fehlen im Pencil-Selling) ===
 (function () {
-  function fixTermSelectStyles(scope) {
-    try {
-      scope = scope || document;
-      const nodes = Array.from(scope.querySelectorAll('select,button,div,span'));
-      const candidates = nodes.filter(el => {
-        const txt = (el.innerText || '').trim();
-        if (/^(24|36)\s*Monate\b/i.test(txt)) return true;
-        if (el.tagName === 'SELECT') {
-          const opts = Array.from(el.options || []);
-          return opts.some(o => /Monat/i.test(o.textContent || ''));
-        }
-        return false;
-      });
-      candidates.forEach(el => {
-        // Grundsätzlich lesbar machen
-        el.style.color = '#fff';
-        el.style.textShadow = '0 1px 0 rgba(0,0,0,0.12)';
+  const queuedRoots = new Set();
+  let scheduled = false;
 
-        // Für echte Controls: pill-style
-        if (el.tagName === 'SELECT' || el.tagName === 'BUTTON') {
-          el.style.background = 'rgba(255,255,255,0.14)';
-          el.style.border = '1px solid rgba(255,255,255,0.75)';
-          el.style.borderRadius = '999px';
-          el.style.padding = '6px 10px';
-          el.style.fontWeight = '700';
-          el.style.fontSize = '12px';
-          el.style.lineHeight = '1';
-          el.style.outline = 'none';
-          el.style.webkitAppearance = 'none';
-          el.style.appearance = 'none';
-        } else {
-          el.style.fontWeight = '700';
-        }
-      });
-    } catch (e) {/* ignore */}
-  }
-  const obs = new MutationObserver(muts => {
-    for (const m of muts) {
-      for (const n of m.addedNodes) {
-        if (n && n.nodeType === 1) {
-          fixTermSelectStyles(n);
-        }
-      }
+  function isTermControl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.tagName === 'SELECT') {
+      return Array.from(el.options || []).some(o => /Monat/i.test(o.textContent || ''));
     }
+    if (el.tagName !== 'BUTTON' && el.tagName !== 'DIV' && el.tagName !== 'SPAN') return false;
+    return /^(24|36)\s*Monate\b/i.test((el.textContent || '').trim());
+  }
+
+  function styleTermControl(el) {
+    if (!isTermControl(el) || el.dataset.psTermStyled === '1') return;
+    el.dataset.psTermStyled = '1';
+    el.style.color = '#fff';
+    el.style.textShadow = '0 1px 0 rgba(0,0,0,0.12)';
+    if (el.tagName === 'SELECT' || el.tagName === 'BUTTON') {
+      el.style.background = 'rgba(255,255,255,0.14)';
+      el.style.border = '1px solid rgba(255,255,255,0.75)';
+      el.style.borderRadius = '999px';
+      el.style.padding = '6px 10px';
+      el.style.fontWeight = '700';
+      el.style.fontSize = '12px';
+      el.style.lineHeight = '1';
+      el.style.outline = 'none';
+      el.style.webkitAppearance = 'none';
+      el.style.appearance = 'none';
+    } else {
+      el.style.fontWeight = '700';
+    }
+  }
+
+  function scan(root) {
+    if (!root || root.nodeType !== 1) return;
+    styleTermControl(root);
+    root.querySelectorAll('select,button,div,span').forEach(styleTermControl);
+  }
+
+  function scheduleScan(root) {
+    queuedRoots.add(root);
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      const roots = Array.from(queuedRoots);
+      queuedRoots.clear();
+      roots.forEach(scan);
+    });
+  }
+
+  const obs = new MutationObserver(muts => {
+    // v54.0.2: waehrend PDF-Export (viele Mutationen durch Canvas/Clone-
+    // Rendering) hat dieses rein optische Dropdown/Badge-Styling nichts zu
+    // tun - Scan hier auszusetzen spart CPU genau dann, wenn Tablets am
+    // staerksten belastet sind. Sobald 'exporting' wieder entfernt wird,
+    // greift der naechste reguläre Mutation-Batch wie gewohnt.
+    try {
+      if (document.body && document.body.classList.contains('exporting')) return;
+    } catch (e) {}
+    muts.forEach(m => m.addedNodes.forEach(n => {
+      if (n && n.nodeType === 1) scheduleScan(n);
+    }));
   });
 
-  // DOM ist beim Babel-Compile bereits bereit – direkt aufrufen statt auf DOMContentLoaded warten
-  fixTermSelectStyles(document);
-  obs.observe(document.body, {
-    subtree: true,
-    childList: true
-  });
+  scheduleScan(document.body);
+  obs.observe(document.body, { subtree: true, childList: true });
 })();
     </script>
 
