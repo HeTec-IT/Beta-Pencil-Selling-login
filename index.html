@@ -19528,6 +19528,7 @@ function App() {
   const pendingPrintRef = useRef(null);
   const archiveSentRef = useRef(false); // wurde erfolgreich archiviert/geparkt
   const archiveInFlightRef = useRef(false); // verhindert Doppel-Tipps während der Übertragung
+  const finishClickInFlightRef = useRef(false); // verhindert Doppel-Tipp auf „Fertig“ (sonst doppeltes Rufnummer-Popup)
   const analyticsLoggedRef = useRef(false); // pro Beratung exakt ein Statistik-Datensatz
   const analyticsRowIdRef = useRef(null); // gleiche Beratung wird aktualisiert statt doppelt angelegt
   const cloudSaveInFlightRef = useRef(null); // verhindert parallele Cloud-Duplikate
@@ -20277,7 +20278,7 @@ function App() {
       const _betreff = buildArchivBetreff('abschluss', _datum, _ruf, _agent);
       // ⚠️ GESPERRT: PENCIL_-Präfix (siehe buildArchivDateiname)
       const _name = buildArchivDateiname('abschluss', _datum, _ruf);
-      const result = await dispatchArchiveMail(blob, _name, _betreff);
+      const result = await dispatchArchiveMail(blob, _name, _betreff, null, ARCHIVE_MANUAL_INTENT);
       if (!result || result.ok !== true) throw (result && result.error) || new Error('Archivierung nicht abgeschlossen.');
       setShowPdfFinalize(false);
     } catch (e) {
@@ -20767,8 +20768,8 @@ function App() {
       const hasContent = !!(snap?.customerSignature || snap?.emailText || snap?.beratungsId ||
         Object.values(snap?.textData || {}).some(v => String(v || '').trim()) ||
         Object.values(snap?.drawnStrokes || {}).some(v => Array.isArray(v) && v.length));
-      if (sameOwner && fresh && hasContent) setShowRestoreToast(true);
-      else clearAutosave();
+      // "Sitzung wiederherstellen"-Hinweis wird nicht mehr angezeigt – alte Sicherung einfach verwerfen.
+      clearAutosave();
     } catch (_) {
       clearAutosave();
     }
@@ -21560,15 +21561,25 @@ function App() {
       try {
         setReferralStep1Done(true);
       } catch (e) {}
+      return {
+        proceed: false,
+        park: true,
+        ok: true
+      };
     } catch (e) {
       try {
-        triggerToast('Parken fehlgeschlagen – bitte Nummer direkt eingeben.');
+        archiveSentRef.current = false;
       } catch (_) {}
+      try {
+        triggerToast('Parken fehlgeschlagen – Vorgang bleibt geöffnet. Bitte Nummer eingeben oder erneut versuchen.');
+      } catch (_) {}
+      return {
+        proceed: false,
+        park: false,
+        ok: false,
+        error: e
+      };
     }
-    return {
-      proceed: false,
-      park: true
-    };
   };
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -21843,6 +21854,8 @@ function App() {
     return kunde ? `Angebot_${kunde}_${_datum}.pdf` : `Angebot_${_datum}.pdf`;
   };
   const handleFinishOfferClick = () => {
+    if (finishClickInFlightRef.current) return; // Doppel-Tipp ignorieren
+    finishClickInFlightRef.current = true;
     try {
       // Inhalterkennung: Status nur fuer Bereiche erzwingen, die wirklich Inhalt haben
       const keys = ['offer1', 'offer2', 'offer3'];
@@ -21865,6 +21878,7 @@ function App() {
         try {
           triggerToast('Bitte Status setzen (Offen/Abgeschlossen) fuer: ' + missingStatus.map(k => k.replace('offer', 'Angebot ')).join(', '));
         } catch (e) {}
+        finishClickInFlightRef.current = false;
         return;
       }
       const openKeys = nonEmptyKeys.filter(k => canvasStatus[k] === 'open');
@@ -21873,36 +21887,46 @@ function App() {
       if (customerSignature) {
         // === WICHTIG: Rufnummer IMMER ZUERST abfragen (schönes Popup), DANN PDF ===
         (async () => {
-          const rufResult = await ensureRufnummerBeforePdf();
-          if (rufResult && rufResult.park) {
-            // Wurde bereits geparkt → nichts drucken, nichts senden, Vorgang zurücksetzen
-            archiveSentRef.current = true; // verhindert erneutes Archiv am Ende
-            try {
-              handleClearAll();
-            } catch (e) {}
-            try {
-              clearAutosave();
-            } catch (e) {}
-            setTimeout(() => {
+          try {
+            const rufResult = await ensureRufnummerBeforePdf();
+            if (rufResult && rufResult.ok === true && rufResult.park === true) {
+              // Wurde bereits geparkt → nichts drucken, nichts senden, Vorgang zurücksetzen
+              archiveSentRef.current = true; // verhindert erneutes Archiv am Ende
               try {
-                window.__psIntentionalReload = true;
-                window.location.reload();
+                handleClearAll();
               } catch (e) {}
-            }, 1500);
-            return;
+              try {
+                clearAutosave();
+              } catch (e) {}
+              setTimeout(() => {
+                try {
+                  window.__psIntentionalReload = true;
+                  window.location.reload();
+                } catch (e) {}
+              }, 1500);
+              return;
+            }
+            if (rufResult && rufResult.ok === false) {
+              // Parken fehlgeschlagen: Vorgang geöffnet lassen und nichts löschen.
+              return;
+            }
+            if (!runOnlyWithOfferValidity(() => setShowReferralModal(true))) return;
+            // Genau ein Kunden-PDF: Das 2-Schritte-Fenster öffnet sofort und
+            // sein bestehender Vorab-Renderer erzeugt den Blob einmalig. Erst der
+            // frische Tipp auf „Senden / drucken“ öffnet das System-Teilen-Menü.
+            setShowReferralModal(true);
+          } finally {
+            finishClickInFlightRef.current = false;
           }
-          if (!runOnlyWithOfferValidity(() => setShowReferralModal(true))) return;
-          // Genau ein Kunden-PDF: Das 2-Schritte-Fenster öffnet sofort und
-          // sein bestehender Vorab-Renderer erzeugt den Blob einmalig. Erst der
-          // frische Tipp auf „Senden / drucken“ öffnet das System-Teilen-Menü.
-          setShowReferralModal(true);
         })(); // Ende async Rufnummer-zuerst-Wrapper
         return;
       }
 
       // Ohne Unterschrift: Entscheidung (Papier / PDF / Share) wie bisher
       setShowFinishTypeModal(true);
+      finishClickInFlightRef.current = false;
     } catch (err) {
+      finishClickInFlightRef.current = false;
       try {
         window.__appErrors = window.__appErrors || [];
         window.__appErrors.push({
@@ -25677,6 +25701,15 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     // Layout settle
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
 
+    // v57: Exakte Zahl der bewusst gebauten A4-Seiten merken.
+    // html2pdf erzeugt durch die Kombination aus 210mm-Hoehe und Seitenumbruch
+    // gelegentlich noch eine zusaetzliche komplett leere Schlussseite.
+    // Diese Zahl ist dynamisch: mehrere Angebotsseiten und die Kunden-Anlage
+    // werden korrekt mitgezaehlt; im Archiv fehlt nur die Anlage.
+    const expectedPdfPageCount = Math.max(1, Array.from(stage.children).filter(el =>
+      el && el.classList && el.classList.contains('share-page')
+    ).length);
+
     // A4 Landscape in points
     const A4_LANDSCAPE_PT = [841.89, 595.28];
     const SHARE_SCROLL_H = Math.max(doc.documentElement?.scrollHeight || 0, doc.body?.scrollHeight || 0, container?.scrollHeight || 0) + 80;
@@ -26180,6 +26213,16 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       if (pdf && typeof pdf.getNumberOfPages === 'function') {
         try {
           if (typeof pdf.deletePage === 'function') {
+            // v57: Zuerst alle Seiten entfernen, die html2pdf ueber die bewusst
+            // gebauten Share-Seiten hinaus angelegt hat. Das beseitigt die leere
+            // Schlussseite zuverlaessig, auch wenn sie technisch ein weisses
+            // Hintergrundbild enthaelt und deshalb nicht als "leer" erkannt wird.
+            try {
+              while (pdf.getNumberOfPages() > expectedPdfPageCount) {
+                pdf.deletePage(pdf.getNumberOfPages());
+              }
+            } catch (_) {}
+
             // Nur nachweislich leere SCHLUSSseiten entfernen. Keine starre
             // Seitenzahl mehr: Falls ein echter Inhalt ausnahmsweise überläuft,
             // darf diese Folgeseite nicht abgeschnitten werden.
@@ -26375,10 +26418,19 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
   // Fehler werden als Status an die Oberfläche zurückgegeben. Solange ARCHIVE_FLOW_URL der
   // Platzhalter ist: leise überspringen.
   // ══════════════════════════════════════════════════════════════════════
+  // Nur echte, bewusst ausgelöste Archiv-Aktionen erhalten dieses interne Token.
+  // Kundenversand, PDF-Vorschau und Druck besitzen es nicht und können den Flow
+  // dadurch technisch nicht versehentlich starten.
+  const ARCHIVE_MANUAL_INTENT = window.__PS_ARCHIVE_MANUAL_INTENT ||
+    (window.__PS_ARCHIVE_MANUAL_INTENT = Symbol('pencil-manual-archive-intent'));
+  const ARCHIVE_DUPLICATE_WINDOW_MS = 90000;
   const sendArchivCopyToNewFlow = (blob, opts) => {
     opts = opts || {};
     return (async () => {
       try {
+        if (opts.intent !== ARCHIVE_MANUAL_INTENT) {
+          return { ok: false, blocked: true, error: new Error('Archiv-Flow ist ausschließlich für manuelle Archiv-Aktionen freigegeben.') };
+        }
         if (!blob || !ARCHIVE_FLOW_URL || ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE')) return;
         const _typ = opts.type === 'abschluss' || opts.type === 'angebot' ? opts.type : customerSignature ? 'abschluss' : 'angebot';
         let _ruf = '';
@@ -26433,45 +26485,77 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
         if (!archiveFileName) archiveFileName = `PENCIL_${_typ === 'abschluss' ? 'Abschluss' : 'Angebot'}_${_datum}.pdf`;
         if (!/\.pdf$/i.test(archiveFileName)) archiveFileName += '.pdf'; // .pdf MUSS immer dran sein
 
-        const pdfBase64 = await blobToBase64(blob);
-
-        // Kontroll-Log: NUR Metadaten, NIE den vollen Base64-Inhalt.
-        try {
-          console.log({
-            archiveFileName,
-            archiveSubject,
-            pdfBase64Vorhanden: !!pdfBase64,
-            pdfBase64Laenge: pdfBase64?.length
-          });
-        } catch (e) {}
-
-        const _nowISO = new Date().toISOString();
-        const payload = {
-          key: ARCHIVE_FLOW_KEY,
-          type: _typ,
-          // 'abschluss' | 'angebot'
-          dsl: _dsl,
-          // 'ja' | 'nein'
-          agent: _agent,
-          shop: _shop,
-          date: _nowISO.slice(0, 10),
-          ts: _nowISO,
-          archiveFileName: archiveFileName,
-          archiveSubject: archiveSubject,
-          pdfBase64: pdfBase64
-        };
-        // no-cors + text/plain: Power-Automate-HTTP-Trigger liefert keine
-        // CORS-Header; Antwort bleibt "opaque" - bewusst in Kauf genommen,
-        // der Kundenversand/die Archivierung darf nie daran hängen bleiben.
-        await fetch(ARCHIVE_FLOW_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: {
-            'Content-Type': 'text/plain'
-          },
-          body: JSON.stringify(payload)
+        const _dedupeKey = [archiveFileName, archiveSubject, String(blob.size || 0)].join('|');
+        const _guard = window.__psArchiveFlowGuard || (window.__psArchiveFlowGuard = {
+          inFlightKey: '',
+          inFlightPromise: null,
+          lastSuccessKey: '',
+          lastSuccessAt: 0
         });
-        return { ok: true, handedToFlow: true };
+        const _nowMs = Date.now();
+        if (_guard.lastSuccessKey === _dedupeKey && _nowMs - (_guard.lastSuccessAt || 0) < ARCHIVE_DUPLICATE_WINDOW_MS) {
+          try { console.warn('[ARCHIV-FLOW] Doppelversand verhindert:', archiveFileName); } catch (e) {}
+          return { ok: true, handedToFlow: true, duplicatePrevented: true };
+        }
+        if (_guard.inFlightKey === _dedupeKey && _guard.inFlightPromise) {
+          return await _guard.inFlightPromise;
+        }
+
+        const _uploadPromise = (async () => {
+          const pdfBase64 = await blobToBase64(blob);
+
+          // Kontroll-Log: NUR Metadaten, NIE den vollen Base64-Inhalt.
+          try {
+            console.log({
+              archiveFileName,
+              archiveSubject,
+              pdfBase64Vorhanden: !!pdfBase64,
+              pdfBase64Laenge: pdfBase64?.length
+            });
+          } catch (e) {}
+
+          const _nowISO = new Date().toISOString();
+          const payload = {
+            key: ARCHIVE_FLOW_KEY,
+            type: _typ,
+            // 'abschluss' | 'angebot'
+            dsl: _dsl,
+            // 'ja' | 'nein'
+            agent: _agent,
+            shop: _shop,
+            date: _nowISO.slice(0, 10),
+            ts: _nowISO,
+            archiveFileName: archiveFileName,
+            archiveSubject: archiveSubject,
+            pdfBase64: pdfBase64
+          };
+          // Exakt EIN HTTP-POST pro manueller Archiv-Aktion.
+          await fetch(ARCHIVE_FLOW_URL, {
+            method: 'POST',
+            mode: 'no-cors',
+            headers: {
+              'Content-Type': 'text/plain'
+            },
+            body: JSON.stringify(payload)
+          });
+          return { ok: true, handedToFlow: true };
+        })();
+
+        _guard.inFlightKey = _dedupeKey;
+        _guard.inFlightPromise = _uploadPromise;
+        try {
+          const _result = await _uploadPromise;
+          if (_result && _result.ok === true) {
+            _guard.lastSuccessKey = _dedupeKey;
+            _guard.lastSuccessAt = Date.now();
+          }
+          return _result;
+        } finally {
+          if (_guard.inFlightPromise === _uploadPromise) {
+            _guard.inFlightKey = '';
+            _guard.inFlightPromise = null;
+          }
+        }
       } catch (e) {
         console.warn('[ARCHIV-FLOW] Upload fehlgeschlagen:', e);
         return { ok: false, error: e };
@@ -26498,6 +26582,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       }
       try {
         const result = await sendArchivCopyToNewFlow(_blob, {
+          intent: ARCHIVE_MANUAL_INTENT,
           type: _typ,
           agent: 'TestAgent',
           dsl: 'nein'
@@ -26515,45 +26600,14 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     };
   } catch (e) {}
 
-  // Hintergrund-Upload: erstellt Print-Look PDF und lädt es hoch. UI bleibt normal (Print-Dialog kann trotzdem kommen).
-  const backgroundAutoUpload = async ({
-    type,
-    triggerToast,
-    ensurePrintHeaders,
-    getAgent,
-    getDsl
-  }) => {
-    try {
-      if (!window.html2pdf) return; // offline/CDN block -> skip
-      // v60: Wenn KEIN Upload-Ziel konfiguriert ist (Platzhalter), gar nicht erst
-      // rendern. Spart auf jedem Tablet unnötige Rechenlast bei jedem Abschluss.
-      // v53.7: prüft jetzt ARCHIVE_FLOW_URL (zentrale Funktion) statt PA_UPLOAD_URL.
-      const _webhook = (() => {
-        try {
-          return localStorage.getItem('ps_pa_webhook') || '';
-        } catch (e) {
-          return '';
-        }
-      })();
-      const _hasTarget = typeof ARCHIVE_FLOW_URL === 'string' && ARCHIVE_FLOW_URL && !ARCHIVE_FLOW_URL.includes('PASTE_NEW_POWER_AUTOMATE_URL_HERE') || !!_webhook;
-      if (!_hasTarget) return; // Upload-Funktion bewusst inaktiv → nichts rendern, nichts senden
-      const blob = await createPrintLookPdfBlob(triggerToast, ensurePrintHeaders, {
-        addPageNumbers: true,
-        archiveOptimized: true,
-        includeRecommendations: false
-      });
-      const agent = getAgent();
-      const dsl = getDsl();
-      await sendArchivCopyToNewFlow(blob, {
-        type,
-        agent,
-        dsl
-      });
-    } catch (e) {
-      console.warn('Auto-Upload skipped:', e);
-      // bewusst nur leise, damit Verkauf nicht gestört wird
-    }
-  };
+  // Sicherheits-Hardlock: Ein automatischer Hintergrund-Upload ist bewusst
+  // deaktiviert. Archiviert wird ausschließlich nach einem manuellen Klick
+  // auf "Ins Archiv" / "Archivieren".
+  const backgroundAutoUpload = async () => ({
+    ok: false,
+    blocked: true,
+    reason: 'manual-archive-only'
+  });
 
   // --- ANDROID SHARE (UX-OPTIMIERUNG: echtes PDF + Web Share API) ---
   // Ziel: PDF im Hintergrund exakt im Print-Look erzeugen (ohne Print-Dialog) und direkt teilen.
@@ -26934,7 +26988,12 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     }
     return betreff;
   };
-  const dispatchArchiveMail = async (blob, dateiname, betreff, preOpenedTab) => {
+  const dispatchArchiveMail = async (blob, dateiname, betreff, preOpenedTab, archiveIntent) => {
+    // Harte Trennung: Nur bewusst ausgelöste Archiv-Aktionen dürfen bis zum
+    // Flow gelangen. Kunden-PDF/Teilen/Drucken besitzen dieses Token nicht.
+    if (archiveIntent !== ARCHIVE_MANUAL_INTENT) {
+      return { ok: false, blocked: true, error: new Error('Archivierung ohne manuellen Archiv-Intent blockiert.') };
+    }
     // GESPERRT: Betreff wird hier nochmals validiert – überzählige Felder werden entfernt.
     // Fehlt der Betreff wider Erwarten, wird immer ein gültiger Ersatz erzeugt.
     try {
@@ -26969,6 +27028,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       } catch (e) {}
       try {
         const flowResult = await sendArchivCopyToNewFlow(blob, {
+          intent: ARCHIVE_MANUAL_INTENT,
           type: _typUpload,
           agent: _agentUpload,
           dsl: _dslUpload,
@@ -27256,12 +27316,13 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
             try {
               refreshParkedCount();
             } catch (e) {}
+            return { ok: true, parked: true };
           } catch (e) {
             try {
-              triggerToast('Parken fehlgeschlagen – bitte Nummer direkt eingeben.');
+              triggerToast('Parken fehlgeschlagen – Vorgang bleibt geöffnet. Bitte Nummer eingeben oder erneut versuchen.');
             } catch (_) {}
+            return { ok: false, parked: false, error: e };
           }
-          return { ok: true, parked: true };
         }
       }
 
@@ -27278,7 +27339,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
       // ⚠️ GESPERRT: Dateiname NUR über buildArchivDateiname() – PENCIL_-Präfix
       // steuert die Power-Automate-Sortierung.
       const _dateiname = _type === 'abschluss' ? buildArchivDateiname('abschluss', _datum, _ruf) : buildArchivDateiname('angebot', _datum, _kunde);
-      const dispatchResult = await dispatchArchiveMail(blob, _dateiname, _betreff);
+      const dispatchResult = await dispatchArchiveMail(blob, _dateiname, _betreff, null, ARCHIVE_MANUAL_INTENT);
       return dispatchResult && dispatchResult.ok === true ? dispatchResult : { ok: false, error: dispatchResult && dispatchResult.error };
     } catch (err) {
       hideOverlay2();
@@ -27322,7 +27383,7 @@ input::placeholder,textarea::placeholder{color:transparent!important;opacity:0!i
     const _betreff = buildArchivBetreff(entry.type, entry.datum, _ruf, entry.agent);
     const _dateiname = buildArchivDateiname(entry.type, entry.datum, _ruf);
     try {
-      const result = await dispatchArchiveMail(entry.pdfBlob, _dateiname, _betreff);
+      const result = await dispatchArchiveMail(entry.pdfBlob, _dateiname, _betreff, null, ARCHIVE_MANUAL_INTENT);
       if (!result || result.ok !== true) return false;
       // Erst nach erfolgreicher Übergabe löschen. Bei Abbruch/Fehler bleibt
       // der geparkte Vorgang vollständig für einen neuen Versuch erhalten.
