@@ -189,7 +189,7 @@
          Bei neuer Version: APP_VERSION unten hochsetzen. Fertig.
          ══════════════════════════════════════════════════════════════════════ -->
     <script>
-    window.APP_VERSION = '54.0.3';
+    window.APP_VERSION = '54.1.0';
     (function(){
         try {
             var KEY = 'pencil_app_version_o2';
@@ -16095,6 +16095,41 @@ const redrawCanvas = (canvas, strokes, scaleFactor = 1, key = '') => {
     }
   }
 };
+
+// === Radierer v2 (Samsung-Notes-Feel): ganze Striche per Treffertest entfernen ===
+function __psDistToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1,
+    dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((px - x1) * dx + (py - y1) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + t * dx,
+    cy = y1 + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+function strokeHitByEraser(stroke, x, y, radius) {
+  if (!stroke || !stroke.points || stroke.points.length === 0) return false;
+  const pad = radius + (stroke.baseLineWidth != null ? stroke.baseLineWidth / 2 : (stroke.width || 2) / 2);
+  const pts = stroke.points;
+  if (pts.length === 1) {
+    return Math.hypot(x - pts[0].x, y - pts[0].y) <= pad;
+  }
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (__psDistToSegment(x, y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y) <= pad) return true;
+  }
+  return false;
+}
+function forceRedrawCanvas(canvas, strokes, scaleFactor, key) {
+  // Wie redrawCanvas, ignoriert aber kurzzeitig die __activeDrawingCanvas-Sperre,
+  // damit der Radierer live (während des Ziehens) sichtbares Feedback zeigt.
+  const prevActive = window.__activeDrawingCanvas;
+  if (prevActive === canvas) window.__activeDrawingCanvas = null;
+  try {
+    redrawCanvas(canvas, strokes, scaleFactor, key);
+  } finally {
+    window.__activeDrawingCanvas = prevActive;
+  }
+}
 const OfferCanvas = React.memo(({
   canvasRef,
   label,
@@ -18905,6 +18940,11 @@ function App() {
   const eraserSizeRef = useRef(4);
   const opacityRef = useRef(0.85);
   const colorRef = useRef('#0044ff');
+  const drawnStrokesRef = useRef(drawnStrokes);
+  useEffect(() => {
+    drawnStrokesRef.current = drawnStrokes;
+  }, [drawnStrokes]);
+  const eraserSessionRef = useRef(null); // Radierer v2: laufende Löschsitzung (Samsung-Notes-Feel)
 
   // --- Tool helpers (Pen / Fountain / Ballpen) ---
   const resolveToolForPointer = (selectedTool, pointerType) => {
@@ -23151,6 +23191,37 @@ function App() {
     const widthScale = isCostCanvas ? 0.55 : 1.0;
     const finalLineWidth = visualBaseW / zoomLevel * widthScale;
 
+    // === Radierer v2 (Samsung-Notes-Feel): ganze Striche live entfernen statt Pixel wegkratzen ===
+    if (currentTool === 'eraser' && key) {
+      const eraserRadius = finalLineWidth * (eraserSizeRef.current || 4) / 2;
+      const working = (drawnStrokesRef.current[key] || []).slice();
+      let changed = false;
+      for (let i = working.length - 1; i >= 0; i--) {
+        const s = working[i];
+        if (!s || s.tool === 'eraser') continue;
+        if (strokeHitByEraser(s, x, y, eraserRadius)) {
+          working.splice(i, 1);
+          changed = true;
+        }
+      }
+      try {
+        if (canvas.setPointerCapture && e.pointerId != null) canvas.setPointerCapture(e.pointerId);
+      } catch (_) {}
+      window.__activeDrawingCanvas = canvas;
+      eraserSessionRef.current = {
+        key,
+        canvas,
+        radius: eraserRadius,
+        working,
+        lastX: x,
+        lastY: y
+      };
+      isDrawingRef.current = true;
+      currentStrokeRef.current = null;
+      if (changed) forceRedrawCanvas(canvas, working, 1, key);
+      return;
+    }
+
     // === v44.0 TINTEN-ENGINE: Startbreite aus echtem Stylus-Druck ===
     const dynStart = currentTool !== 'eraser' && currentTool !== 'highlighter' ? getInkToolDynamics(currentTool) : null;
     const pressure = e.pointerType === 'pen' && e.pressure > 0 ? e.pressure : 0.5;
@@ -23239,6 +23310,47 @@ function App() {
       return;
     }
     if (gestureModeRef.current && pointerType === 'touch') return;
+
+    // === Radierer v2: während des Ziehens live weiterlöschen (keine Freigabe nötig) ===
+    if (eraserSessionRef.current && isDrawingRef.current) {
+      e.preventDefault();
+      const session = eraserSessionRef.current;
+      const nativeEv = e.nativeEvent || e;
+      let events = [nativeEv];
+      try {
+        if (nativeEv.getCoalescedEvents) {
+          const coalesced = nativeEv.getCoalescedEvents();
+          if (coalesced && coalesced.length > 0) events = coalesced;
+        }
+      } catch (_) {}
+      let changed = false;
+      for (const ev of events) {
+        const {
+          x: cssX,
+          y: cssY
+        } = getRelativeCoords(ev, canvas) || {};
+        if (cssX == null || cssY == null) continue;
+        // Zwischenpunkte abtasten, damit schnelle Züge keine Striche überspringen
+        const dist = Math.hypot(cssX - session.lastX, cssY - session.lastY);
+        const steps = Math.max(1, Math.ceil(dist / Math.max(4, session.radius / 2)));
+        for (let s = 1; s <= steps; s++) {
+          const ix = session.lastX + (cssX - session.lastX) * (s / steps);
+          const iy = session.lastY + (cssY - session.lastY) * (s / steps);
+          for (let i = session.working.length - 1; i >= 0; i--) {
+            const st2 = session.working[i];
+            if (!st2 || st2.tool === 'eraser') continue;
+            if (strokeHitByEraser(st2, ix, iy, session.radius)) {
+              session.working.splice(i, 1);
+              changed = true;
+            }
+          }
+        }
+        session.lastX = cssX;
+        session.lastY = cssY;
+      }
+      if (changed) forceRedrawCanvas(canvas, session.working, 1, session.key);
+      return;
+    }
     if (!isDrawingRef.current || !currentStrokeRef.current) return;
     e.preventDefault();
 
@@ -23423,6 +23535,26 @@ function App() {
           }, PEN_GRACE_MS + 30);
         } catch (_) {}
       }
+    }
+
+    // === Radierer v2: Sitzung abschließen – reduzierte Strichliste committen ===
+    if (eraserSessionRef.current) {
+      const session = eraserSessionRef.current;
+      eraserSessionRef.current = null;
+      isDrawingRef.current = false;
+      currentStrokeRef.current = null;
+      window.__activeDrawingCanvas = null;
+      if (session.key) {
+        setDrawnStrokes(prev => ({
+          ...prev,
+          [session.key]: session.working
+        }));
+        if (session.key.startsWith('offer')) {
+          setRedrawCounter(r => r + 1);
+        }
+      }
+      if (session.canvas) forceRedrawCanvas(session.canvas, session.working, 1, session.key);
+      return;
     }
     // pointercancel: immer alle Locks freigeben (z.B. bei Systemgeste)
     if (e && e.type === 'pointercancel') {
